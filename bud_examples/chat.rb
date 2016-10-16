@@ -21,8 +21,6 @@ class ChatClient
     mcast <~ stdio do |s|
       [@server, [ip_port, @nick, Time.new.strftime("%I:%M.%S"), s.line]]
     end
-
-    stdio <~ mcast { |m| [pretty_print(m.val)] }
   end
 end
 
@@ -35,3 +33,5 @@ client_ip, client_port = client_addr.split(":")
 
 program = ChatClient.new(ARGV[0], server, :stdin => $stdin, :ip => client_ip, :port => client_port.to_i)
 program.run_fg
+
+# ruby chat.rb your_nick 129.97.84.118:1234 129.97.84.54:1234

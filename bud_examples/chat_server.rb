@@ -29,3 +29,5 @@ ip, port = addr.split(":")
 puts "Server address: #{ip}:#{port}"
 program = ChatServer.new(:ip => ip, :port => port.to_i)
 program.run_fg
+
+#ruby chat_server.rb 129.97.84.118:1234
