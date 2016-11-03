@@ -3,10 +3,11 @@ ENV["BUD_DEBUG"]="1"
 require "./pregel/master.rb"
 require "./pregel/worker.rb"
 
-worker_id   = (ARGV.length > 0) ? ARGV[0] : "worker1"
-master_addr = (ARGV.length > 1) ? ARGV[1] : PregelMasterProtocol::DEFAULT_ADDRESS
-worker_addr = (ARGV.length > 2) ? ARGV[2] : PregelWorkerProtocol::DEFAULT_ADDRESS 
+master_addr = (ARGV.length > 0) ? ARGV[0] : PregelMasterProtocol::DEFAULT_ADDRESS
+worker_addr = (ARGV.length > 1) ? ARGV[1] : PregelWorkerProtocol::DEFAULT_ADDRESS
 worker_ip, worker_port = worker_addr.split(":")
 
-program = PregelWorker.new(worker_id, master_addr, :ip => worker_ip, :port => worker_port)
+program = PregelWorker.new(master_addr, :stdin => $stdin, :ip => worker_ip, :port => worker_port)
 program.run_fg
+
+#ruby pregel/start_worker.rb 127.0.0.1:1234 127.0.0.1:1236

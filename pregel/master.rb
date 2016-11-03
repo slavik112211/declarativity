@@ -35,12 +35,24 @@ class PregelMaster
   include MulticastProtocol
   include ConnectionProtocol
 
+  def initialize(opts={})
+    @workers_count = -1
+    super opts
+  end
+
   state do
-    table :workers_list, [:key] => [:value]
+    table :workers_list, [:worker_addr] => [:id]
+    lmax  :workers_count #lattices - monotonically increasing sequences: 0,1,2,3...
   end
 
   bloom :workers_connect do
-    workers_list <= connect{|c| [c.worker_addr, c.id]}
+    workers_list <= connect{|request| [request.worker_addr, @workers_count+=1]}
+
+    # this sends a whole list of workers to each worker on each Bloom timetick.
+    # TODO: employ a smarter strategy to send worker_list only when mutated
+    connect <~ (workers_list * workers_list).combos do |l1, l2|
+      [l1.worker_addr, l2.worker_addr, l2.id]
+    end
   end
 
   bloom :command_input do
@@ -49,6 +61,11 @@ class PregelMaster
 
   bloom :debug do
     stdio <~ command_input { |command| [command.to_s] }
-    stdio <~ workers_list  { |list| [list.to_s] }
+    stdio <~ workers_list.inspected
+  end
+
+  bloom :lattices do
+    workers_count <= workers_list.group([], count()) {|columns| columns.first }
+    stdio <~ [["workers_count: "+workers_count.reveal.to_s]]
   end
 end

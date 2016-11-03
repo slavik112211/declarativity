@@ -18,18 +18,25 @@ class PregelWorker
   include PregelWorkerProtocol
   include ConnectionProtocol
 
-  def initialize(worker_id, server, opts={})
-    @worker_id = worker_id
+  def initialize(server, opts={})
     @server = server
     super opts
   end
 
   bootstrap do
-    connect <~ [[@server, ip_port, @worker_id]]
-    # workers_list <+ [[ip_port, @nick]]
+    connect <~ [[@server, ip_port]]
   end
 
   state do
-    table :workers_list, [:key] => [:value]
+    table :workers_list, [:worker_addr] => [:id]
+  end
+
+  bloom :connect_response do
+    workers_list <= connect{|worker| [worker.worker_addr, worker.id] }
+  end
+
+  bloom :debug do
+    stdio <~ workers_list.inspected
+    stdio <~ workers_list.group([], count())
   end
 end
