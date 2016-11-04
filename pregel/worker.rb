@@ -1,11 +1,7 @@
 require 'rubygems'
 require 'bud'
-require './pregel/master'
-require './lib/delivery/reliable'
-
-module PregelWorkerProtocol
-  DEFAULT_ADDRESS = "127.0.0.1:1235"
-end
+require './pregel/membership.rb'
+# require './lib/delivery/reliable'
 
 # Workers:
 # 1. maintains vertex' values
@@ -15,28 +11,10 @@ end
 # messages are sent with the superstep #, that they belong to. 
 class PregelWorker
   include Bud
-  include PregelWorkerProtocol
-  include ConnectionProtocol
+  include MembershipWorker
 
   def initialize(server, opts={})
     @server = server
     super opts
-  end
-
-  bootstrap do
-    connect <~ [[@server, ip_port]]
-  end
-
-  state do
-    table :workers_list, [:worker_addr] => [:id]
-  end
-
-  bloom :connect_response do
-    workers_list <= connect{|worker| [worker.worker_addr, worker.id] }
-  end
-
-  bloom :debug do
-    stdio <~ workers_list.inspected
-    stdio <~ workers_list.group([], count())
   end
 end

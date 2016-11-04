@@ -1,10 +1,10 @@
 ENV["BUD_DEBUG"]="1"
 
-require "./pregel/master.rb"
 require "./pregel/worker.rb"
+require "./pregel/membership.rb"
 
-master_addr = (ARGV.length > 0) ? ARGV[0] : PregelMasterProtocol::DEFAULT_ADDRESS
-worker_addr = (ARGV.length > 1) ? ARGV[1] : PregelWorkerProtocol::DEFAULT_ADDRESS
+master_addr = (ARGV.length > 0) ? ARGV[0] : MembershipMaster::DEFAULT_ADDRESS
+worker_addr = (ARGV.length > 1) ? ARGV[1] : MembershipWorker::DEFAULT_ADDRESS
 worker_ip, worker_port = worker_addr.split(":")
 
 program = PregelWorker.new(master_addr, :stdin => $stdin, :ip => worker_ip, :port => worker_port)
