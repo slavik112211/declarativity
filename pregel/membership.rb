@@ -56,6 +56,9 @@ module MembershipWorker
   end
 
   bloom :connect_response do
-    workers_list <= connect{|worker| [worker.worker_addr, worker.id] }
+    workers_list <= connect{ |worker|
+      @worker_id = worker.id if worker.worker_addr == ip_port
+      [worker.worker_addr, worker.id]
+    }
   end
 end

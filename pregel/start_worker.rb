@@ -11,3 +11,4 @@ program = PregelWorker.new(master_addr, :stdin => $stdin, :ip => worker_ip, :por
 program.run_fg
 
 #ruby pregel/start_worker.rb 127.0.0.1:1234 127.0.0.1:1236
+# :stdin => $stdin,
