@@ -1,5 +1,6 @@
 require 'rubygems'
 require 'bud'
+# require 'debugger'
 require './pregel/membership.rb'
 #require './lib/delivery/reliable'
 #require './lib/delivery/multicast'
@@ -26,26 +27,50 @@ class PregelMaster
   end
 
   state do
-    channel :control_pipe, [:@address, :message]
-    interface input, :command_input, [:command, :params]
+    channel :control_pipe, [:@address, :from, :message]
+    interface input, :console_input, [:command, :params]
+    lbool :graph_loaded
   end
 
-  bloom :command_input do
-    command_input <= stdio { |input|
+  bloom :messaging do
+    console_input <= stdio { |input|
       if ["load","start"].any? { |command| input.line.include? command }
-        input.line.split(' ')
+        command = input.line.split(' ')
+        command = [command[0], {:filename=>command[1]}] if command[0] == "load"
       end
     }
 
     #send commands to all workers
-    control_pipe <~ (workers_list * command_input).combos do |worker, command|
-      message = ControlMessage.new(ip_port, worker.worker_addr, @request_count+=1, 'request', command.command, command.params)
-      [worker.worker_addr, message]
+    control_pipe <~ (workers_list * console_input).combos do |worker, command|
+      message = ControlMessage.new(ip_port, worker.worker_addr,
+        @request_count+=1, 'request', command.command, command.params)
+      [worker.worker_addr, ip_port, message]
+    end
+
+    # update workers list on job-completion messages
+    workers_list <+- (workers_list * control_pipe)
+      .pairs(workers_list.worker_addr => control_pipe.from) do |worker, command|
+        # if control_pipe record wouldn't be joined with 'workers_list' collection,
+        # a relevant worker could be retrieved like this:
+        # worker = workers_list.instance_variable_get(:@storage)[[command.message.from]]
+        [worker.worker_addr, worker.id, true] if command.message.params[:status]=="success"
     end
   end
 
+  bloom :pregel_processing do
+    graph_loaded <= workers_list
+      .group([], bool_and(:graph_loaded)) {|columns| columns.first }
+
+    stdio <~ stdio { |input|
+      if ["start"].any? { |command| input.line.include? command } and !graph_loaded.reveal
+        [["Cannot start processing - graph not loaded."]]
+      end
+    }
+  end
+
   bloom :debug_master do
-    stdio <~ command_input { |command| [command.to_s] }
+    stdio <~ [["loaded: "+graph_loaded.reveal.to_s]]
+    stdio <~ console_input { |command| [command.to_s] }
     stdio <~ control_pipe  { |command| [command.message.inspect] }
   end
 end

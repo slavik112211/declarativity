@@ -22,9 +22,10 @@ class PregelWorker
   end
 
   state do
-    channel :control_pipe, [:@address, :message]
+    channel :control_pipe, [:@address, :from, :message]
     interface output, :control_pipe_output, [:message]
-    table :vertices
+    table :vertices, [:vertex_id] => [:value, :total_adjacent_vertices, :vertices_to]
+    periodic :timestep, 5  #Process a Bloom timestep every 5 seconds
   end
 
   bloom :commands_processing do
@@ -35,14 +36,14 @@ class PregelWorker
     control_pipe_output <+ control_pipe do |payload|
       ControlMessagesHandler.process_input_message(payload.message)
     end
-    control_pipe <~ control_pipe_output { |record| [record.message.to, record.message] }
+    control_pipe <~ control_pipe_output { |record| [record.message.to, ip_port, record.message] }
   end
 
   bloom :load_graph do
     vertices <= control_pipe.flat_map do |payload|
       if(payload.message.command="load")
         graph_loader = DistributedGraphLoader.new(
-          payload.message.params, @worker_id, workers_count.reveal)
+          payload.message.params[:filename], @worker_id, workers_count.reveal)
         graph_loader.load_graph
         graph_loader.vertices
       end
@@ -58,7 +59,7 @@ class ControlMessagesHandler
   def self.process_input_message message
     if(message.command == "load")
       response = ControlMessage.new(message.to, message.from, message.id, "response",message.command)
-      response.params = (File.exist? message.params) ? "success" : "failure: no such file"
+      response.params = (File.exist? message.params[:filename]) ? {status: "success"} : {status: "failure: no such file"}
       return [response]
     end
   end
