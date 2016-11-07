@@ -18,10 +18,10 @@ require './pregel/membership.rb'
 class PregelMaster
   include Bud
   include MembershipMaster
+  MAX_SUPERSTEPS = 5
 
   def initialize(opts={})
     @request_count = -1
-    @superstep =-1
     super opts
   end
 
@@ -29,9 +29,11 @@ class PregelMaster
     channel :control_pipe, [:@address, :from, :message]
     interface input, :multicast, [:command, :params]
     lbool :graph_loaded
+    lbool :computation_completed
 
     table :supersteps, [:id] => [:request_sent, :completed]
     lmax :supersteps_count
+    lmax :supersteps_completed_count
     interface input, :start_superstep, [:iteration]
     periodic :timestep, 3  #Process a Bloom timestep every 3 seconds
   end
@@ -81,15 +83,15 @@ class PregelMaster
 
     #start iterating
     start_superstep <= stdio { |input|
-      if(input.line=="start" and graph_loaded.reveal and supersteps.empty?)
-        [@superstep+=1] #0
-      end
+      [0] if(input.line=="start" and graph_loaded.reveal and supersteps.empty?)
     }
 
     start_superstep <+ workers_list.group([], bool_and(:superstep_completed)) {|columns|
-      if columns.first == true
+      if columns.first == true and supersteps_count.reveal < MAX_SUPERSTEPS
         # workers_list.each{|worker| worker.superstep_completed=false } # puts columns
-        [@superstep+=1] #supersteps_count.reveal+1
+         #Insert the next superstep_id as current 'supersteps_count'
+         #That's because superstep_id start from 0, and 'supersteps_count' is always ahead +1
+        [supersteps_count.reveal]
       end
     }
 
@@ -112,21 +114,32 @@ class PregelMaster
       [start_superstep_command.iteration, false, false]
     }
 
-    # for the latest superstep tuple in "supersteps", send a request to Workers 
+    # for the latest superstep tuple in "supersteps", send a request to Workers
     # to start the superstep, if the request wasn't sent yet
     multicast <= supersteps.argmax([], :id) {|superstep|
-      if(!superstep.request_sent and !superstep.completed)        
+      if(!superstep.request_sent and !superstep.completed)
         superstep.request_sent=true
         ["start", {:superstep=>superstep.id}]
       end
     }
-    # supersteps_count <= supersteps.group([], count()) {|columns| columns.first }
+
+    supersteps_count <= supersteps.group([], count()) {|columns| columns.first }
+    supersteps_completed_count <= supersteps.group([:completed], count()) do |grouped_count|
+      # This grouping can contain 2 groups - number of completed supersteps: [true, 3], and
+      # number of not completed supersteps: [false, 1]
+      # This block is executed twice - once for each case.
+      # We're ignoring the [false, 1] and only process the [true, 3] case
+      grouped_count[1] if(grouped_count[0]==true)
+    end
+    computation_completed <= supersteps_completed_count.gt_eq(MAX_SUPERSTEPS)
   end
 
   bloom :debug_master do
     stdio <~ [["loaded: "+graph_loaded.reveal.to_s]]
     stdio <~ multicast { |command| [command.to_s] }
-    # stdio <~ [["supersteps_count: "+supersteps_count.reveal.to_s]]
+    stdio <~ [["supersteps_count: "+supersteps_count.reveal.to_s]]
+    stdio <~ [["supersteps_completed_count: "+supersteps_completed_count.reveal.to_s]]
+    stdio <~ [["Computation completed: "+computation_completed.reveal.to_s]]
     stdio <~ start_superstep { |command| [command.to_s] }
     stdio <~ supersteps { |superstep| [superstep.to_s] }
     stdio <~ control_pipe  { |command| [command.message.inspect] }
