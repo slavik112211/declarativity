@@ -9,7 +9,7 @@ module Membership
 
   state do
     channel :connect, [:@address, :worker_addr] => [:id]
-    table :workers_list, [:worker_addr] => [:id, :graph_loaded]
+    table :workers_list, [:worker_addr] => [:id, :graph_loaded, :superstep_completed]
     lmax  :workers_count # lattice - monotonically increasing sequence: 0,1,2,3 ...
   end
 
@@ -35,7 +35,7 @@ module MembershipMaster
   end
 
   bloom :workers_connect do
-    workers_list <= connect{|request| [request.worker_addr, @workers_count+=1, false]}
+    workers_list <= connect{|request| [request.worker_addr, @workers_count+=1, false, false]}
 
     #only send updated workers_list to all workers if it was updated
     #in current Bloom timetick - when "connect" channel has incoming connection requests

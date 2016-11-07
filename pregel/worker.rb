@@ -41,13 +41,16 @@ class PregelWorker
 
   bloom :load_graph do
     vertices <= control_pipe.flat_map do |payload|
-      if(payload.message.command="load")
+      if(payload.message.command == "load")
         graph_loader = DistributedGraphLoader.new(
           payload.message.params[:filename], @worker_id, workers_count.reveal)
         graph_loader.load_graph
         graph_loader.vertices
       end
     end
+  end
+
+  bloom :pregel_processing do
   end
 
   bloom :debug_worker do
@@ -60,6 +63,11 @@ class ControlMessagesHandler
     if(message.command == "load")
       response = ControlMessage.new(message.to, message.from, message.id, "response",message.command)
       response.params = (File.exist? message.params[:filename]) ? {status: "success"} : {status: "failure: no such file"}
+      return [response]
+    elsif(message.command == "start") #stub to return successful completion of superstep by Worker
+      response = ControlMessage.new(message.to, message.from, message.id, "response",message.command)
+      response.params = {status: "success", superstep: message.params[:superstep]}
+      sleep 10
       return [response]
     end
   end
