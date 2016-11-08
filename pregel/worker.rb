@@ -24,8 +24,18 @@ class PregelWorker
   state do
     channel :control_pipe, [:@address, :from, :message]
     interface output, :control_pipe_output, [:message]
-    table :vertices, [:vertex_id] => [:value, :total_adjacent_vertices, :vertices_to]
+    interface input, :control_pipe_input, [:message]
+    table :vertices, [:id] => [:value, :total_adjacent_vertices, :vertices_to]
+
     periodic :timestep, 5  #Process a Bloom timestep every 5 seconds
+
+    # table :vertex_iteration, [:iteration, :vertex_id] => [:messages_sent, :ack_received]
+    table :queue_in,  [:vertex_id] => [:messages] #[[:vertex_from, :value], [:vertex_from, :value]]
+    table :queue_out, [:vertex_id, :vertex_from] => [:message]
+  end
+
+  bootstrap do
+    queue_in <= [ [1, [[2, 0.5], [3, 0.3]]  ]  , [2, [[1, 0.1], [3, 0.7]]] ]
   end
 
   bloom :commands_processing do
@@ -37,6 +47,10 @@ class PregelWorker
       ControlMessagesHandler.process_input_message(payload.message)
     end
     control_pipe <~ control_pipe_output { |record| [record.message.to, ip_port, record.message] }
+
+    control_pipe_input <= control_pipe do |payload|
+      [payload.message] if payload.message.command=="start"
+    end
   end
 
   bloom :load_graph do
@@ -51,10 +65,32 @@ class PregelWorker
   end
 
   bloom :pregel_processing do
+    # [:vertex_id, :vertex_from] => [:message]
+    queue_out <= (vertices * queue_in * control_pipe_input)
+      .pairs(vertices.id => queue_in.vertex_id) do |vertex, queue_in, command|
+        #  queue_in[0].value+queue_in[1].value
+        messages = []
+        new_vertex_value = 0
+        queue_in.messages.each {|message|
+          new_vertex_value+=message[1]
+        }
+
+        vertex.vertices_to.each { |adjacent_vertex|
+          messages << [adjacent_vertex, vertex.id, new_vertex_value]
+        }
+        vertex.value = new_vertex_value
+        messages
+    end
+
+
+    # vertex_iteration <+ control_pipe { |payload|
+    #   [0, false, false] if(payload.message.command=="start" and vertex_iteration.empty?)
+    # }
   end
 
   bloom :debug_worker do
     stdio <~ control_pipe { |command| [command.to_s] }
+    stdio <~ queue_in { |vertex_queue| [vertex_queue.to_s] }
   end
 end
 
