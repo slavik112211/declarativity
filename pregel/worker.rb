@@ -18,6 +18,7 @@ class PregelWorker
 
   def initialize(server, opts={})
     @server = server
+    @graph_loader = DistributedGraphLoader.new
     super opts
   end
 
@@ -25,17 +26,22 @@ class PregelWorker
     channel :control_pipe, [:@address, :from, :message]
     interface output, :control_pipe_output, [:message]
     interface input, :control_pipe_input, [:message]
+    # 'vertices' table should ALSO include vertices that don't point to any vertices (dead-end vertices)
     table :vertices, [:id] => [:value, :total_adjacent_vertices, :vertices_to]
 
     periodic :timestep, 5  #Process a Bloom timestep every 5 seconds
 
     # table :vertex_iteration, [:iteration, :vertex_id] => [:messages_sent, :ack_received]
     table :queue_in,  [:vertex_id] => [:messages] #[[:vertex_from, :value], [:vertex_from, :value]]
-    table :queue_out, [:vertex_id, :vertex_from] => [:message]
+    table :queue_in_buffer, [:vertex_id, :vertex_from] => [:message]
+
+    table :queue_out_temp, [:messages]
+    table :queue_out, [:adjacent_vertex_worker_id, :vertex_from, :vertex_to] => [:message]
+    # table :supersteps, [:id] => [:completed]
   end
 
   bootstrap do
-    queue_in <= [ [1, [[2, 0.5], [3, 0.3]]  ]  , [2, [[1, 0.1], [3, 0.7]]] ]
+    queue_in <= [ [1, [[2, 0.5], [3, 0.3]]  ]  , [2, [[1, 0.1], [3, 0.7]] ] ]
   end
 
   bloom :commands_processing do
@@ -44,11 +50,11 @@ class PregelWorker
     #sending response to server is delayed by one timestep,
     #to allow for the requested action to be performed (in current timestep) before sending a response
     control_pipe_output <+ control_pipe do |payload|
-      ControlMessagesHandler.process_input_message(payload.message)
+      MessagesHandler.process_input_message(payload.message)
     end
     control_pipe <~ control_pipe_output { |record| [record.message.to, ip_port, record.message] }
 
-    control_pipe_input <= control_pipe do |payload|
+    control_pipe_input <+ control_pipe do |payload|
       [payload.message] if payload.message.command=="start"
     end
   end
@@ -56,55 +62,94 @@ class PregelWorker
   bloom :load_graph do
     vertices <= control_pipe.flat_map do |payload|
       if(payload.message.command == "load")
-        graph_loader = DistributedGraphLoader.new(
-          payload.message.params[:filename], @worker_id, workers_count.reveal)
-        graph_loader.load_graph
-        graph_loader.vertices
+        @graph_loader.file_name = payload.message.params[:filename]
+        @graph_loader.worker_id = @worker_id
+        @graph_loader.total_workers = workers_count.reveal
+        # graph_loader = DistributedGraphLoader.new(
+        #   payload.message.params[:filename], @worker_id, workers_count.reveal)
+        @graph_loader.load_graph
+        @total_vertices = @graph_loader.vertices_all.size
+        @graph_loader.vertices
       end
     end
   end
 
   bloom :pregel_processing do
-    # [:vertex_id, :vertex_from] => [:message]
-    queue_out <= (vertices * queue_in * control_pipe_input)
-      .pairs(vertices.id => queue_in.vertex_id) do |vertex, queue_in, command|
-        #  queue_in[0].value+queue_in[1].value
-        messages = []
-        new_vertex_value = 0
-        queue_in.messages.each {|message|
-          new_vertex_value+=message[1]
-        }
+    # table :queue_out, [:adjacent_vertex_worker_id, :vertex_from, :vertex_to] => [:message]
+    # This rule should also apply when queue_in has no messages.
 
-        vertex.vertices_to.each { |adjacent_vertex|
-          messages << [adjacent_vertex, vertex.id, new_vertex_value]
-        }
-        vertex.value = new_vertex_value
-        messages
-    end
+    queue_out_temp <+ (vertices * queue_in * control_pipe_input)    # don't put <+ here. the puts "whateva" won't work
+      .combos() do |vertex, queue_in, command|
+        puts "whateva #{vertex.inspect}"
+        puts "whateva #{queue_in.inspect}"
+        puts "whateva #{command.inspect}"
+        puts "ze end."
+        #vertices.id => queue_in.vertex_id
+        unless(control_pipe_input.empty?)
+          # debugger
+          messages = []
+          unless(queue_in.messages.nil?)  # no incoming messages
+            new_vertex_value=0
+            queue_in.messages.each {|message|
+              new_vertex_value+=message[1]
+            }
+            vertex.value = 0.15/@total_vertices + 0.85*new_vertex_value
+          end
 
+          vertex.vertices_to.each { |adjacent_vertex|
+            adjacent_vertex_worker_id = @graph_loader.graph_partition_for_vertex(adjacent_vertex)
+            messages << [adjacent_vertex_worker_id, vertex.id, adjacent_vertex, vertex.value.to_f / vertex.total_adjacent_vertices]
+          }
+          [messages]
+        end
+      end
 
-    # vertex_iteration <+ control_pipe { |payload|
-    #   [0, false, false] if(payload.message.command=="start" and vertex_iteration.empty?)
+    # table :queue_out_temp,  [:vertex_id] => [:messages]
+    # table :queue_out, [:adjacent_vertex_worker_id, :vertex_from, :vertex_to] => [:message]
+    # queue_out <+ queue_out_temp.flat_map {|message|
+    #   # debugger
+    #   message[0]
     # }
+
+
+
+    # delivery of the vertex messages to adjacent vertices for the next Pregel superstep
+    # table :queue_out, [:adjacent_vertex_worker_id, :vertex_id, :vertex_from] => [:message]
+    # control_pipe <~ (queue_out * workers_list)
+    #   .pairs(:adjacent_vertex_worker_id => :id) do |vertex_message, worker|
+    #     message = Message.new(ip_port, worker.worker_addr, nil, 
+    #       "request", "vertex_message", vertex_message)
+    #     [worker.worker_addr, ip_port, message]
+    # end
+  end
+
+  # accumulate messages from nodes into queue_in buffer
+  bloom :queue_in_buffer_accumulate do
+    queue_in_buffer <= control_pipe { |vertex_message|
+      if(vertex_message.message.type == "vertex_message")
+        [vertex_message.message.params[1], vertex_message.message.params[2], vertex_message.message]
+      end
+    }
   end
 
   bloom :debug_worker do
     stdio <~ control_pipe { |command| [command.to_s] }
-    stdio <~ queue_in { |vertex_queue| [vertex_queue.to_s] }
+    stdio <~ queue_in  { |vertex_queue| [vertex_queue.inspect] }
+    stdio <~ queue_out_temp { |vertex_queue| [vertex_queue.inspect] }
   end
 end
 
-class ControlMessagesHandler
+class MessagesHandler
   def self.process_input_message message
     if(message.command == "load")
-      response = ControlMessage.new(message.to, message.from, message.id, "response",message.command)
+      response = Message.new(message.to, message.from, message.id, "response",message.command)
       response.params = (File.exist? message.params[:filename]) ? {status: "success"} : {status: "failure: no such file"}
       return [response]
     elsif(message.command == "start") #stub to return successful completion of superstep by Worker
-      response = ControlMessage.new(message.to, message.from, message.id, "response",message.command)
-      response.params = {status: "success", superstep: message.params[:superstep]}
-      sleep 10
-      return [response]
+      # response = Message.new(message.to, message.from, message.id, "response",message.command)
+      # response.params = {status: "success", superstep: message.params[:superstep]}
+      # sleep 10
+      # return [response]
     end
   end
 end

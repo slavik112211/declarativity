@@ -35,7 +35,7 @@ class PregelMaster
     lmax :supersteps_count
     lmax :supersteps_completed_count
     interface input, :start_superstep, [:iteration]
-    periodic :timestep, 3  #Process a Bloom timestep every 3 seconds
+    periodic :timestep, 5  #Process a Bloom timestep every 3 seconds
   end
 
   bloom :messaging do
@@ -51,7 +51,7 @@ class PregelMaster
 
     #send commands to all workers
     control_pipe <~ (workers_list * multicast).combos do |worker, command|
-      message = ControlMessage.new(ip_port, worker.worker_addr,
+      message = Message.new(ip_port, worker.worker_addr,
         @request_count+=1, 'request', command.command, command.params)
       [worker.worker_addr, ip_port, message]
     end
@@ -151,7 +151,7 @@ end
 #  'type': either 'request' from master to worker, or 'response'
 #  'command': either 'load' or 'start'...
 #  'params': additional info (like filename in 'load', or 'error/success' in response)
-class ControlMessage
+class Message
   attr_accessor :from, :to, :id, :type, :command, :params
   def initialize(from, to, id=nil, type=nil, command=nil, params=nil)
     @from    = from

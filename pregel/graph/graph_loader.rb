@@ -8,14 +8,13 @@ require 'set'
 # [node1] [node3]
 # [node2] [node3]
 class DistributedGraphLoader
-  attr_reader :vertices
-
+  attr_accessor :vertices, :file_name, :worker_id, :total_workers
+  attr_reader :vertices_from, :vertices_to, :vertices_all
   def initialize(file_name="graph.txt", worker_id=0, total_workers=1)
     @vertices = Array.new
     @file_name=file_name
     @worker_id=worker_id
     @total_workers=total_workers
-    @init_vertex_value=0
   end
 
   def load_graph
@@ -33,7 +32,6 @@ class DistributedGraphLoader
     calc_total_adjacent_vertices(@vertices.last) if (!@vertices.empty?)
   end
 
-  attr_reader :vertices_from, :vertices_to, :vertices_all
   def graph_stats
     return unless File.exist? @file_name
     @vertices_from = Set.new
@@ -48,14 +46,13 @@ class DistributedGraphLoader
     }
     @vertices_all.merge(@vertices_from)
     @vertices_all.merge(@vertices_to)
-    @init_vertex_value=1.0/@vertices_all.size
   end
 
-  private
   def graph_partition_for_vertex vertex_id
     vertex_id % @total_workers
   end
 
+  private
   # 1. Not searching for whether this vertex has been encountered before -
   #    find() slows down the loading of large graphs.
   #    For now, assuming that input files are ordered, i.e.
@@ -71,7 +68,7 @@ class DistributedGraphLoader
     else
       calc_total_adjacent_vertices(@vertices.last) if (!@vertices.empty?)
       #vertex[2] - an array of adjacent vertices that current vertex points to
-      vertex = [input_line[0], @init_vertex_value, 1, [input_line[1]]]
+      vertex = [input_line[0], 1, 1, [input_line[1]]]
       @vertices << vertex
     end
   end
