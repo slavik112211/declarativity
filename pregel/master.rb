@@ -11,7 +11,7 @@ require './pregel/membership.rb'
 #    and assigns the chunks of graph per each workers.
 # 3. starts computation - and starts the superstep loop.
 #      1. waits until EACH worker signals the completion of the stage
-#      2. each worker only signals to master when it's processing is finished,
+#      2. each worker only signals to master when its processing is finished,
 #         and all messages sent by worker are delivered (with acknowledgements of receipt)
 # 4. runs for 30 iterations (or until convergence), where vertex values do not change anymore
 #    in consequent iterations.
@@ -35,7 +35,7 @@ class PregelMaster
     lmax :supersteps_count
     lmax :supersteps_completed_count
     interface input, :start_superstep, [:iteration]
-    periodic :timestep, 1  #Process a Bloom timestep every 3 seconds
+    periodic :timestep, 5  #Process a Bloom timestep every 3 seconds
   end
 
   bloom :messaging do
