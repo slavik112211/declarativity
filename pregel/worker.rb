@@ -27,21 +27,21 @@ class PregelWorker
     interface output, :control_pipe_output, [:message]
     interface input, :control_pipe_input, [:message]
     # 'vertices' table should ALSO include vertices that don't point to any vertices (dead-end vertices)
-    table :vertices, [:id] => [:value, :total_adjacent_vertices, :vertices_to]
+    table :vertices, [:id] => [:value, :total_adjacent_vertices, :vertices_to, :messages_inbox]
 
     periodic :timestep, 5  #Process a Bloom timestep every 5 seconds
 
     # table :vertex_iteration, [:iteration, :vertex_id] => [:messages_sent, :ack_received]
-    table :queue_in,  [:vertex_id] => [:messages] #[[:vertex_from, :value], [:vertex_from, :value]]
+    # table :queue_in,  [:vertex_id] => [:messages] #[[:vertex_from, :value], [:vertex_from, :value]]
     table :queue_in_buffer, [:vertex_id, :vertex_from] => [:message]
 
-    table :queue_out_temp, [:messages]
+    # table :queue_out_temp, [:messages]
     table :queue_out, [:adjacent_vertex_worker_id, :vertex_from, :vertex_to] => [:message]
     # table :supersteps, [:id] => [:completed]
   end
 
   bootstrap do
-    queue_in <= [ [1, [[2, 0.5], [3, 0.3]]  ]  , [2, [[1, 0.1], [3, 0.7]] ] ]
+    # queue_in <= [ [1, [[2, 0.5], [3, 0.3]]  ]  , [2, [[1, 0.1], [3, 0.7]] ] ]
   end
 
   bloom :commands_processing do
@@ -65,10 +65,12 @@ class PregelWorker
         @graph_loader.file_name = payload.message.params[:filename]
         @graph_loader.worker_id = @worker_id
         @graph_loader.total_workers = workers_count.reveal
-        # graph_loader = DistributedGraphLoader.new(
-        #   payload.message.params[:filename], @worker_id, workers_count.reveal)
         @graph_loader.load_graph
         @total_vertices = @graph_loader.vertices_all.size
+
+        # STUB DATA populating the messages_inbox for first and second vertices
+        @graph_loader.vertices[0] << [[1, 0.1], [3, 0.7]] if @graph_loader.vertices[0][0] == 2
+        @graph_loader.vertices[0] << [[1, 0.1], [3, 0.7]] if @graph_loader.vertices[0][0] == 1
         @graph_loader.vertices
       end
     end
@@ -78,19 +80,18 @@ class PregelWorker
     # table :queue_out, [:adjacent_vertex_worker_id, :vertex_from, :vertex_to] => [:message]
     # This rule should also apply when queue_in has no messages.
 
-    queue_out_temp <+ (vertices * queue_in * control_pipe_input)    # don't put <+ here. the puts "whateva" won't work
-      .combos() do |vertex, queue_in, command|
-        puts "whateva #{vertex.inspect}"
-        puts "whateva #{queue_in.inspect}"
-        puts "whateva #{command.inspect}"
-        puts "ze end."
-        #vertices.id => queue_in.vertex_id
-        unless(control_pipe_input.empty?)
-          # debugger
-          messages = []
-          unless(queue_in.messages.nil?)  # no incoming messages
+    # don't put <+ here. the puts "whateva" won't work
+    queue_out <+ control_pipe_input.flat_map do |start_command|
+        # puts "whateva #{vertex.inspect}"
+        # puts "whateva #{vertices.inspected}"
+        # puts "whateva #{queue_in.inspect}"
+        # puts "whateva #{command.inspect}"
+        # puts "ze end."
+        messages = []
+        vertices.each {|vertex|
+          unless(vertex.messages_inbox.nil?)  # no incoming messages for this vertex
             new_vertex_value=0
-            queue_in.messages.each {|message|
+            vertex.messages_inbox.each {|message|
               new_vertex_value+=message[1]
             }
             vertex.value = 0.15/@total_vertices + 0.85*new_vertex_value
@@ -100,8 +101,8 @@ class PregelWorker
             adjacent_vertex_worker_id = @graph_loader.graph_partition_for_vertex(adjacent_vertex)
             messages << [adjacent_vertex_worker_id, vertex.id, adjacent_vertex, vertex.value.to_f / vertex.total_adjacent_vertices]
           }
-          [messages]
-        end
+        }
+        messages
       end
 
     # table :queue_out_temp,  [:vertex_id] => [:messages]
@@ -134,8 +135,8 @@ class PregelWorker
 
   bloom :debug_worker do
     stdio <~ control_pipe { |command| [command.to_s] }
-    stdio <~ queue_in  { |vertex_queue| [vertex_queue.inspect] }
-    stdio <~ queue_out_temp { |vertex_queue| [vertex_queue.inspect] }
+    # stdio <~ queue_in  { |vertex_queue| [vertex_queue.inspect] }
+    stdio <~ queue_out { |vertex_queue| [vertex_queue.inspect] }
   end
 end
 
