@@ -68,7 +68,7 @@ class DistributedGraphLoader
     else
       calc_total_adjacent_vertices(@vertices.last) if (!@vertices.empty?)
       #vertex[2] - an array of adjacent vertices that current vertex points to
-      vertex = [input_line[0], 1, 1, [input_line[1]]]
+      vertex = [input_line[0], 1.to_f/@vertices_all.size, 1, [input_line[1]]]
       @vertices << vertex
     end
   end
