@@ -35,7 +35,7 @@ class PregelMaster
     lmax :supersteps_count
     lmax :supersteps_completed_count
     interface input, :start_superstep, [:iteration]
-    periodic :timestep, 5  #Process a Bloom timestep every 3 seconds
+    periodic :timestep, 1  #Process a Bloom timestep every 3 seconds
   end
 
   bloom :messaging do
@@ -66,6 +66,7 @@ class PregelMaster
           [worker.worker_addr, worker.id, true, worker.superstep_completed]
         elsif(command.message.command == "start" and command.message.params[:status]=="success")
           #worker completed the current superstep
+          sleep 2
           [worker.worker_addr, worker.id, worker.graph_loaded, true]
         end
     end
@@ -142,7 +143,7 @@ class PregelMaster
     stdio <~ [["Computation completed: "+computation_completed.reveal.to_s]]
     stdio <~ start_superstep { |command| [command.to_s] }
     stdio <~ supersteps { |superstep| [superstep.to_s] }
-    stdio <~ control_pipe  { |command| [command.message.inspect] }
+    # stdio <~ control_pipe  { |command| [command.message.inspect] }
   end
 end
 
