@@ -1,0 +1,8 @@
+#sample graph
+#see PageRank Pregel example.jpg
+#Vertex_Y=1; Vertex_A=2; Vertex_M=3
+1 1
+1 2
+2 1
+2 3
+3 2

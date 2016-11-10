@@ -11,14 +11,14 @@ require './pregel/membership.rb'
 #    and assigns the chunks of graph per each workers.
 # 3. starts computation - and starts the superstep loop.
 #      1. waits until EACH worker signals the completion of the stage
-#      2. each worker only signals to master when it's processing is finished,
+#      2. each worker only signals to master when its processing is finished,
 #         and all messages sent by worker are delivered (with acknowledgements of receipt)
 # 4. runs for 30 iterations (or until convergence), where vertex values do not change anymore
 #    in consequent iterations.
 class PregelMaster
   include Bud
   include MembershipMaster
-  MAX_SUPERSTEPS = 5
+  MAX_SUPERSTEPS = 15
 
   def initialize(opts={})
     @request_count = -1
@@ -35,7 +35,7 @@ class PregelMaster
     lmax :supersteps_count
     lmax :supersteps_completed_count
     interface input, :start_superstep, [:iteration]
-    periodic :timestep, 1  #Process a Bloom timestep every 3 seconds
+    periodic :timestep, 2  #Process a Bloom timestep every 3 seconds
   end
 
   bloom :messaging do
@@ -137,12 +137,12 @@ class PregelMaster
 
   bloom :debug_master do
     stdio <~ [["loaded: "+graph_loaded.reveal.to_s]]
-    stdio <~ multicast { |command| [command.to_s] }
+    # stdio <~ multicast { |command| [command.to_s] }
     stdio <~ [["supersteps_count: "+supersteps_count.reveal.to_s]]
     stdio <~ [["supersteps_completed_count: "+supersteps_completed_count.reveal.to_s]]
     stdio <~ [["Computation completed: "+computation_completed.reveal.to_s]]
-    stdio <~ start_superstep { |command| [command.to_s] }
-    stdio <~ supersteps { |superstep| [superstep.to_s] }
+    # stdio <~ start_superstep { |command| [command.to_s] }
+    # stdio <~ supersteps { |superstep| [superstep.to_s] }
     # stdio <~ control_pipe  { |command| [command.message.inspect] }
   end
 end

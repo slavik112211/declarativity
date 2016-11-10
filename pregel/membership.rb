@@ -18,9 +18,9 @@ module Membership
   end
 
   bloom :debug_membership do
-    stdio <~ workers_list.inspected
+    # stdio <~ workers_list.inspected
     # stdio <~ workers_list.group([], count())
-    stdio <~ [["workers_count: "+workers_count.reveal.to_s]]
+    # stdio <~ [["workers_count: "+workers_count.reveal.to_s]]
   end
 end
 

@@ -9,7 +9,7 @@ require 'debugger'
 # Workers:
 # 1. maintains vertex' values
 # 2. maintains 2 queues of messages per each vertex - one for this superstep, second for the other.
-# 3. signals to master when the worker is done processing it's chunk, 
+# 3. signals to master when the worker is done processing its chunk,
 #    and all messages are sent (with acknowledgement of receipt)
 # messages are sent with the superstep #, that they belong to. 
 class PregelWorker
@@ -30,7 +30,7 @@ class PregelWorker
     # messages_inbox = [[:vertex_from, :value], [:vertex_from, :value]]
     table :vertices, [:id] => [:value, :total_adjacent_vertices, :vertices_to, :messages_inbox]
 
-    periodic :timestep, 0.1  #Process a Bloom timestep every 5 seconds
+    periodic :timestep, 1  #Process a Bloom timestep every 5 seconds
 
     table :queue_in_next, [:vertex_id, :vertex_from] => [:message_value]
     table :queue_out, [:adjacent_vertex_worker_id, :vertex_from, :vertex_to] => [:message]
@@ -61,8 +61,8 @@ class PregelWorker
         @total_vertices = @graph_loader.vertices_all.size
 
         # STUB DATA populating the messages_inbox for first and second vertices for superstep 0
-        @graph_loader.vertices[0] << [[1, 0.1], [3, 0.7]] if @graph_loader.vertices[0][0] == 2
-        @graph_loader.vertices[0] << [[2, 0.5], [3, 0.3]] if @graph_loader.vertices[0][0] == 1
+        # @graph_loader.vertices[0] << [[1, 0.1], [3, 0.7]] if @graph_loader.vertices[0][0] == 2
+        # @graph_loader.vertices[0] << [[2, 0.5], [3, 0.3]] if @graph_loader.vertices[0][0] == 1
         @graph_loader.vertices
       end
     end
@@ -99,12 +99,14 @@ class PregelWorker
     queue_out <+ start_processing_command.flat_map do |start_command|
       messages = []
       vertices.each {|vertex|
-        unless(vertex.messages_inbox.nil? and vertex.messages_inbox.empty?)
+        if(!vertex.messages_inbox.nil? and !vertex.messages_inbox.empty?)
           new_vertex_value=0
           vertex.messages_inbox.each {|message|
             new_vertex_value+=message[1]
           }
           vertex.value = 0.15/@total_vertices + 0.85*new_vertex_value
+          # not considering the random jump factor, for simplicity when testing
+          # vertex.value = new_vertex_value
         end
 
         vertex.vertices_to.each { |adjacent_vertex|
@@ -144,10 +146,10 @@ class PregelWorker
 
   bloom :debug_worker do
     # stdio <~ control_pipe { |command| [command.to_s] }
-    stdio <~ queue_in_next  { |vertex_message| [vertex_message.inspect] }
+    # stdio <~ queue_in_next  { |vertex_message| [vertex_message.inspect] }
     stdio <~ vertices  { |vertex| [vertex.inspect] }
     # stdio <~ queue_out { |vertex_queue| [vertex_queue.inspect] }
-    stdio <~ [["next_superstep_messages_count: "+next_superstep_messages_count.reveal.to_s]]
+    # stdio <~ [["next_superstep_messages_count: "+next_superstep_messages_count.reveal.to_s]]
   end
 end
 
