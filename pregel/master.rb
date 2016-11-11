@@ -18,7 +18,7 @@ require './pregel/membership.rb'
 class PregelMaster
   include Bud
   include MembershipMaster
-  MAX_SUPERSTEPS = 25
+  MAX_SUPERSTEPS = 250
 
   def initialize(opts={})
     @request_count = -1
@@ -26,6 +26,7 @@ class PregelMaster
   end
 
   state do
+    channel :master_stdio, [:@address, :from, :message]
     channel :control_pipe, [:@address, :from, :message]
     interface input, :multicast, [:command, :params]
     lbool :graph_loaded
@@ -35,17 +36,14 @@ class PregelMaster
     lmax :supersteps_count
     lmax :supersteps_completed_count
     interface input, :start_superstep, [:iteration]
-    periodic :timestep, 1 #Process a Bloom timestep every 1 second
+    periodic :timestep, 0.001 #Process a Bloom timestep every millisecond
   end
 
   bloom :messaging do
-    multicast <= stdio { |input|
-      if ["load","start"].any? { |command| input.line.include? command }
-        command = input.line.split(' ')
-        if(command[0] == "load")
-          command = [command[0], {:filename=>command[1]}]
-        # elsif(command[0] == "start")
-        end 
+    multicast <= master_stdio { |network_message|
+      if network_message.message.include? "load"
+        command = network_message.message.split(' ')
+        command = [command[0], {:filename=>command[1]}]
       end
     }
 
@@ -75,15 +73,17 @@ class PregelMaster
     graph_loaded <= workers_list
       .group([], bool_and(:graph_loaded)) {|columns| columns.first }
 
-    stdio <~ stdio { |input|
-      if ["start"].any? { |command| input.line.include? command } and !graph_loaded.reveal
-        [["Cannot start processing - graph not loaded."]]
+    master_stdio <~ master_stdio { |network_message|
+      if network_message.message.include? "start" and !graph_loaded.reveal
+        [network_message.from, ip_port, "Cannot start processing - graph not loaded."]
+      elsif network_message.message.include? "load" and !File.exists?(network_message.message.split(" ")[1])
+        [network_message.from, ip_port, "Cannot load graph - file not found."]
       end
     }
 
     #start iterating
-    start_superstep <= stdio { |input|
-      [0] if(input.line=="start" and graph_loaded.reveal and supersteps.empty?)
+    start_superstep <= master_stdio { |network_message|
+      [0] if(network_message.message=="start" and graph_loaded.reveal and supersteps.empty?)
     }
 
     start_superstep <+ workers_list.group([], bool_and(:superstep_completed)) {|columns|
@@ -137,11 +137,11 @@ class PregelMaster
   bloom :debug_master do
     stdio <~ [["loaded: "+graph_loaded.reveal.to_s]]
     # stdio <~ multicast { |command| [command.to_s] }
-    stdio <~ [["supersteps_count: "+supersteps_count.reveal.to_s]]
+    # stdio <~ [["supersteps_count: "+supersteps_count.reveal.to_s]]
     stdio <~ [["supersteps_completed_count: "+supersteps_completed_count.reveal.to_s]]
-    stdio <~ [["Computation completed: "+computation_completed.reveal.to_s]]
+    # stdio <~ [["Computation completed: "+computation_completed.reveal.to_s]]
     # stdio <~ start_superstep { |command| [command.to_s] }
-    stdio <~ supersteps { |superstep| [superstep.to_s] }
+    # stdio <~ supersteps { |superstep| [superstep.to_s] }
     # stdio <~ control_pipe  { |command| [command.message.inspect] }
   end
 end
@@ -160,5 +160,23 @@ class Message
     @type    = type
     @command = command
     @params  = params
+  end
+end
+
+class PregelMasterConsoleInput
+  include Bud
+
+  def initialize(master_addr, opts={})
+    @master_addr = master_addr
+    super opts
+  end
+
+  state do
+    channel :master_stdio, [:@address, :from, :message]
+  end
+
+  bloom :master_stdio do
+    master_stdio <~ stdio { |input| [@master_addr, ip_port, input.line] }
+    stdio <~ master_stdio { |network_message| [network_message.message] }
   end
 end

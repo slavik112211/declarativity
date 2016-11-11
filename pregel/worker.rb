@@ -36,7 +36,7 @@ class PregelWorker
     # messages_inbox = [[:vertex_from, :value], [:vertex_from, :value]]
     table :vertices, [:id] => [:value, :total_adjacent_vertices, :vertices_to, :messages_inbox]
 
-    periodic :timestep, 0.5  #Process a Bloom timestep every 0.5 seconds
+    periodic :timestep, 0.001  #Process a Bloom timestep every milliseconds
 
     table :queue_in_next, [:vertex_id, :vertex_from] => [:message_value]
     table :queue_out, [:adjacent_vertex_worker_id, :vertex_from, :vertex_to] => [:message, :sent, :delivered]
@@ -156,7 +156,7 @@ class PregelWorker
   end
 
   bloom :debug_worker do
-    stdio <~ control_pipe { |network_message| [network_message.to_s] if network_message.message.command == "start" }
+    # stdio <~ control_pipe { |network_message| [network_message.to_s] if network_message.message.command == "start" }
     # stdio <~ queue_in_next  { |vertex_message| [vertex_message.inspect] }
     stdio <~ vertices  { |vertex| [vertex.inspect] }
     # stdio <~ queue_out { |vertex_queue| [vertex_queue.inspect] }

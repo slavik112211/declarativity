@@ -1,4 +1,4 @@
-ENV["BUD_DEBUG"]="1"
+# ENV["BUD_DEBUG"]="1"
 
 require "./pregel/master.rb"
 require "./pregel/membership.rb"
