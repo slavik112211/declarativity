@@ -16,9 +16,10 @@ class PregelWorker
   include Bud
   include MembershipWorker
 
-  def initialize(server, opts={})
+  def initialize(server, vertex_processor, opts={})
     @server = server
     @graph_loader = DistributedGraphLoader.new
+    @pregel_vertex_processor = vertex_processor
     super opts
   end
 
@@ -51,7 +52,7 @@ class PregelWorker
         @graph_loader.worker_id = @worker_id
         @graph_loader.total_workers = workers_count.reveal
         @graph_loader.load_graph
-        @total_vertices = @graph_loader.vertices_all.size
+        @pregel_vertex_processor.graph_loader = @graph_loader
 
         # STUB DATA populating the messages_inbox for first and second vertices for superstep 0
         # @graph_loader.vertices[0] << [[1, 0.1], [3, 0.7]] if @graph_loader.vertices[0][0] == 2
@@ -96,27 +97,10 @@ class PregelWorker
 
   bloom :pregel_processing do
     # table :queue_out, [:adjacent_vertex_worker_id, :vertex_from, :vertex_to] => [:message]
-    # This rule should also apply when queue_in has no messages
-    queue_out <+ worker_input.flat_map do |start_command|
-      messages = []
-      vertices.each {|vertex|
-        if(!vertex.messages_inbox.nil? and !vertex.messages_inbox.empty?)
-          new_vertex_value=0
-          vertex.messages_inbox.each {|message|
-            new_vertex_value+=message[1]
-          }
-          vertex.value = 0.15/@total_vertices + 0.85*new_vertex_value
-          # not considering the random jump factor, for simplicity when testing
-          # vertex.value = new_vertex_value
-        end
-
-        vertex.vertices_to.each { |adjacent_vertex|
-          adjacent_vertex_worker_id = @graph_loader.graph_partition_for_vertex(adjacent_vertex)
-          messages << [adjacent_vertex_worker_id, vertex.id, adjacent_vertex, 
-            vertex.value.to_f / vertex.total_adjacent_vertices, false, false]
-        }
-      }
-      messages
+    queue_out <+ (vertices * worker_input).pairs.flat_map do |vertex, worker_input_command|
+      if(worker_input_command.message.command=="start")
+        vertex_messages = @pregel_vertex_processor.compute(vertex)
+      end
     end
 
     # delivery of the vertex messages to adjacent vertices for the next Pregel superstep
