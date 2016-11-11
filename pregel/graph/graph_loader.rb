@@ -30,6 +30,7 @@ class DistributedGraphLoader
       # puts index if (index%5000 == 0)
     }
     calc_total_adjacent_vertices(@vertices.last) if (!@vertices.empty?)
+    load_dead_end_vertices
   end
 
   def graph_stats
@@ -46,6 +47,13 @@ class DistributedGraphLoader
     }
     @vertices_all.merge(@vertices_from)
     @vertices_all.merge(@vertices_to)
+  end
+
+  def load_dead_end_vertices
+    dead_end_vertices = @vertices_to - @vertices_from
+    dead_end_vertices.each {|vertex_id|
+      @vertices << [vertex_id, 1.to_f/@vertices_all.size, 0, []]
+    }
   end
 
   def graph_partition_for_vertex vertex_id
