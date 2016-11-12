@@ -18,7 +18,7 @@ require './pregel/membership.rb'
 class PregelMaster
   include Bud
   include MembershipMaster
-  MAX_SUPERSTEPS = 250
+  MAX_SUPERSTEPS = 50
 
   def initialize(opts={})
     @request_count = -1
@@ -138,10 +138,10 @@ class PregelMaster
     stdio <~ [["loaded: "+graph_loaded.reveal.to_s]]
     # stdio <~ multicast { |command| [command.to_s] }
     # stdio <~ [["supersteps_count: "+supersteps_count.reveal.to_s]]
-    stdio <~ [["supersteps_completed_count: "+supersteps_completed_count.reveal.to_s]]
-    # stdio <~ [["Computation completed: "+computation_completed.reveal.to_s]]
+    # stdio <~ [["supersteps_completed_count: "+supersteps_completed_count.reveal.to_s]]
+    stdio <~ [["Computation completed: "+computation_completed.reveal.to_s]]
     # stdio <~ start_superstep { |command| [command.to_s] }
-    # stdio <~ supersteps { |superstep| [superstep.to_s] }
+    stdio <~ supersteps { |superstep| [superstep.to_s] }
     # stdio <~ control_pipe  { |command| [command.message.inspect] }
   end
 end
