@@ -94,13 +94,14 @@ end
 # [node1] [# of neighbours] [neighbour1, neighbour2, ...]
 # [node2] [# of neighbours] [neighbour1, neighbour2, ...]
 class AdjacencyListGraphLoader
-  attr_accessor :vertices, :file_name, :worker_id, :total_workers
+  attr_accessor :vertices, :file_name, :worker_id, :total_workers, :lalp_threshold
   attr_reader :graph_size
-  def initialize(file_name="graph.txt", worker_id=0, total_workers=1)
+  def initialize(file_name="graph.txt", worker_id=0, total_workers=1, lalp_threshold = 10)
     @vertices = Array.new
     @file_name=file_name
     @worker_id=worker_id
     @total_workers=total_workers
+    @lalp_threshold=lalp_threshold
   end
 
   def load_graph
@@ -110,9 +111,16 @@ class AdjacencyListGraphLoader
       next if line[0]=="#"
       line = line.split("\s").map {|vertex_id| vertex_id.to_i }
 
+      # first check whether lalp is applied to this vertex. If so every worker will need to partition some part
+      if line[1] > @lalp_threshold
+        add_lalp_vertex(line)
+      # else, just invoke regular vertex loading scheme, only the vertices hashed to this partition      
+      elsif graph_partition_for_vertex(line[0]) == @worker_id 
+        add_vertex(line)
       #skip vertex, if it belongs to the other worker
-      next if graph_partition_for_vertex(line[0]) != @worker_id
-      add_vertex(line)
+      else 
+        next
+      end
       # puts index if (index%5000 == 0)
     }
   end
@@ -139,4 +147,20 @@ class AdjacencyListGraphLoader
     @vertices << vertex
   end
 
+  # Vertex is stored in the following format:
+  # [vertex_id, vertex_value, total_adjacent_vertices, [vertices_it_points_to]]
+  # where vertex_value is set to 1/total_vertex_number (init for PageRank) and vertices_it_points_to include vertices only in this specific partition
+  def add_lalp_vertex input_line
+    # first extract the outgoing edges that are assigned to this partition
+    local_neighbours = Array.new
+    line[2].each{ |adjacent_vertex|
+      # skip vertices that are not assigned to this machine
+      next if graph_partition_for_vertex(line[0]) != @worker_id
+      local_neighbours << adjacent_vertex
+    }
+
+    # now create vertex entry with only local neighbours
+    vertex = [input_line[0], 1.to_f/@graph_size, local_neighbours.length, local_neighbours]
+    @vertices << vertex
+  end
 end
