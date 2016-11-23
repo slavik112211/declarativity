@@ -34,7 +34,8 @@ class PregelWorker
     table :worker_events, [:name] => [:finished]
 
     # messages_inbox = [[:vertex_from, :value], [:vertex_from, :value]]
-    table :vertices, [:id] => [:value, :total_adjacent_vertices, :vertices_to, :messages_inbox]
+    # message type is a symbol with three values: [:regular, :master, :ghost]
+    table :vertices, [:id] => [:type, :value, :total_adjacent_vertices, :vertices_to, :messages_inbox]
 
     periodic :timestep, 3  #Process a Bloom timestep every milliseconds
 
@@ -89,7 +90,7 @@ class PregelWorker
             end
           }
         }
-        [vertex.id, vertex.value, vertex.total_adjacent_vertices, vertex.vertices_to, messages]
+        [vertex.id, vertex.type, vertex.value, vertex.total_adjacent_vertices, vertex.vertices_to, messages]
       end
     end
 

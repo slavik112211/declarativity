@@ -52,7 +52,7 @@ class DistributedGraphLoader
   def load_dead_end_vertices
     dead_end_vertices = @vertices_to - @vertices_from
     dead_end_vertices.each {|vertex_id|
-      @vertices << [vertex_id, 1.to_f/@vertices_all.size, 0, []]
+      @vertices << [vertex_id, :regular, 1.to_f/@vertices_all.size, 0, []]
     }
   end
 
@@ -67,22 +67,23 @@ class DistributedGraphLoader
   #    all rows for one vertex are colocated: 1 1\n 1 1\n 2 1\n 2 5\n
   #    vertex = @vertices.find{|vertex| vertex[0] == input_line[0] }
   # 2. Vertex is stored in the following format:
-  #    [vertex_id, vertex_value, total_adjacent_vertices, [vertices_it_points_to]]
+  #    [vertex_id, vertex_type, vertex_value, total_adjacent_vertices, [vertices_it_points_to]]
   #    where vertex_value is set to 1/total_vertex_number (init for PageRank)
+  #    vertex_type is :regular, :master or :ghost
   def add_vertex input_line
     if(!@vertices.empty? and input_line[0] == @vertices.last[0])
       #add adjacent vertex to the list of adjacent vertices of current vertex
-      @vertices.last[3] << input_line[1]
+      @vertices.last[4] << input_line[1]
     else
       calc_total_adjacent_vertices(@vertices.last) if (!@vertices.empty?)
       #vertex[2] - an array of adjacent vertices that current vertex points to
-      vertex = [input_line[0], 1.to_f/@vertices_all.size, 1, [input_line[1]]]
+      vertex = [input_line[0], :regular, 1.to_f/@vertices_all.size, 1, [input_line[1]]]
       @vertices << vertex
     end
   end
 
   def calc_total_adjacent_vertices vertex
-    vertex[2] = vertex[3].size
+    vertex[3] = vertex[4].size
   end
 end
 
@@ -143,7 +144,7 @@ class AdjacencyListGraphLoader
   # [vertex_id, vertex_value, total_adjacent_vertices, [vertices_it_points_to]]
   # where vertex_value is set to 1/total_vertex_number (init for PageRank)
   def add_vertex input_line
-    vertex = [input_line[0], 1.to_f/@graph_size, input_line[1], input_line[2..input_line.length]]
+    vertex = [input_line[0], :regular, 1.to_f/@graph_size, input_line[1], input_line[2..input_line.length]]
     @vertices << vertex
   end
 
@@ -153,14 +154,15 @@ class AdjacencyListGraphLoader
   def add_lalp_vertex input_line
     # first extract the outgoing edges that are assigned to this partition
     local_neighbours = Array.new
-    line[2].each{ |adjacent_vertex|
+    input_line[2..input_line.length].each{ |adjacent_vertex|
       # skip vertices that are not assigned to this machine
-      next if graph_partition_for_vertex(line[0]) != @worker_id
+      next if graph_partition_for_vertex(adjacent_vertex) != @worker_id
       local_neighbours << adjacent_vertex
     }
 
     # now create vertex entry with only local neighbours
-    vertex = [input_line[0], 1.to_f/@graph_size, local_neighbours.length, local_neighbours]
+    vertex_type = graph_partition_for_vertex(input_line[0]) == @worker_id ? :master : :ghost
+    vertex = [input_line[0], vertex_type, 1.to_f/@graph_size, local_neighbours.length, local_neighbours]
     @vertices << vertex
   end
 end
