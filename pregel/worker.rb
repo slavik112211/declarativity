@@ -36,7 +36,7 @@ class PregelWorker
     # messages_inbox = [[:vertex_from, :value], [:vertex_from, :value]]
     table :vertices, [:id] => [:value, :total_adjacent_vertices, :vertices_to, :messages_inbox]
 
-    periodic :timestep, 0.001  #Process a Bloom timestep every milliseconds
+    periodic :timestep, 3  #Process a Bloom timestep every milliseconds
 
     # Each Pregel superstep "queue_in_next" holds upto N amount of network_messages, where N=1 per each Worker
     # Each network message may contain 1 or more vertex_messages (from that Worker)

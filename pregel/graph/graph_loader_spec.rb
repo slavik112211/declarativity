@@ -49,4 +49,26 @@ describe DistributedGraphLoader do
     expect(graph_loader.vertices_all.size) .to eq 27770
     expect(graph_loader.vertices.size)     .to eq 27770
   end
+
+ end
+
+ describe AdjacencyListGraphLoader do
+   # this part is about the adjacency graph loader
+  it "should load a partition of graph per worker_id (subset of vertices)" do
+    graph_loader = AdjacencyListGraphLoader.new 'datasets/sample_graph_adjacency.txt', 0, 3
+    graph_loader.load_graph
+    expect(graph_loader.vertices).to eq([[3, 0.16666666666666666, 3, [1, 2, 3]], [6, 0.16666666666666666, 3, [1, 2, 5]]])
+    expect(graph_loader.vertices.size).to eq 2
+
+    graph_loader = AdjacencyListGraphLoader.new 'datasets/sample_graph_adjacency.txt', 1, 3
+    graph_loader.load_graph
+    expect(graph_loader.vertices).to eq([[1, 0.16666666666666666, 3, [1, 2, 3]], [4, 0.16666666666666666, 3, [3, 5, 6]]])
+    expect(graph_loader.vertices.size).to eq 2
+
+    graph_loader = AdjacencyListGraphLoader.new 'datasets/sample_graph_adjacency.txt', 2, 3
+    graph_loader.load_graph
+    expect(graph_loader.vertices).to eq([[2, 0.16666666666666666, 3, [1, 2, 3]], [5, 0.16666666666666666, 3, [2, 3, 6]]])
+    expect(graph_loader.vertices.size).to eq 2
+  end
+
 end
