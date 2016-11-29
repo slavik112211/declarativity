@@ -9,7 +9,7 @@ require 'set'
 # [node2] [node3]
 class DistributedGraphLoader
   attr_accessor :vertices, :file_name, :worker_id, :total_workers
-  attr_reader :vertices_from, :vertices_to, :vertices_all
+  attr_reader :vertices_from, :vertices_to, :vertices_all, :graph_size
   def initialize(file_name="graph.txt", worker_id=0, total_workers=1)
     @vertices = Array.new
     @file_name=file_name
@@ -47,6 +47,7 @@ class DistributedGraphLoader
     }
     @vertices_all.merge(@vertices_from)
     @vertices_all.merge(@vertices_to)
+    @graph_size = @vertices_all.size
   end
 
   def load_dead_end_vertices
@@ -110,7 +111,7 @@ class AdjacencyListGraphLoader
     return unless File.exist? @file_name
     File.open(@file_name, 'r').each_line.with_index { |line, index|
       next if line[0]=="#"
-      line = line.split("\s").map {|vertex_id| vertex_id.to_i }
+      line = line.split("\s").map {|entry| entry.to_i }
 
       # first check whether lalp is applied to this vertex. If so every worker will need to partition some part
       if line[1] > @lalp_threshold

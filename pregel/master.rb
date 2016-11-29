@@ -36,7 +36,7 @@ class PregelMaster
     lmax :supersteps_count
     lmax :supersteps_completed_count
     interface input, :start_superstep, [:iteration]
-    periodic :timestep, 5 #Process a Bloom timestep every millisecond
+    periodic :timestep, 1 #Process a Bloom timestep every millisecond
   end
 
   bloom :messaging do
