@@ -98,7 +98,7 @@ end
 class AdjacencyListGraphLoader
   attr_accessor :vertices, :file_name, :worker_id, :total_workers, :lalp_threshold
   attr_reader :graph_size
-  def initialize(file_name="graph.txt", worker_id=0, total_workers=1, lalp_threshold = 10)
+  def initialize(file_name="graph.txt", worker_id=0, total_workers=1, lalp_threshold = 5)
     @vertices = Array.new
     @file_name=file_name
     @worker_id=worker_id
@@ -163,7 +163,8 @@ class AdjacencyListGraphLoader
 
     # now create vertex entry with only local neighbours
     vertex_type = graph_partition_for_vertex(input_line[0]) == @worker_id ? :master : :ghost
-    vertex = [input_line[0], vertex_type, 1.to_f/@graph_size, local_neighbours.length, local_neighbours]
+    # out degree of LALP vertices are total outdegree across all workers, required for correct PageRank
+    vertex = [input_line[0], vertex_type, 1.to_f/@graph_size, input_line[1], local_neighbours]
     @vertices << vertex
   end
 end
