@@ -41,7 +41,10 @@ class PregelWorker
 
     # we store each vertex message in a seperate entry, so there might be multiple messages per vertex from same worker
     table :queue_in_next, [:vertex_id, :vertex_from] => [:message_value]
+    table :queue_in_next_lalp, [:vertex_id] => [:message_value]
     table :queue_out, [:adjacent_vertex_worker_id, :vertex_from, :vertex_to] => [:message, :sent, :delivered]
+    # special lalp messages which will be sent to each worker and replicated to vertex inboxes
+    table :queue_out_lalp, [:vertex_from] => [:message, :sent_count, :sent, :delivered]
     # all vertex messages are packed into 1 network message per Worker:
     # [:worker_id] => [[:vertex_from, :vertex_to, :message], ...]
     # table :queue_out_per_worker_temp, [:worker_id] => [:vertex_messages_queue]
@@ -104,8 +107,19 @@ class PregelWorker
   bloom :pregel_processing do
     # table :queue_out, [:adjacent_vertex_worker_id, :vertex_from, :vertex_to] => [:message]
     queue_out <+ (vertices * worker_input).pairs.flat_map do |vertex, worker_input_command|
-      if(worker_input_command.message.command=="start")
-        vertex_messages = @pregel_vertex_processor.compute(vertex)
+      if(worker_input_command.message.command=="start" and vertex.type == :regular)
+        # regular vertices send message for each adjacent edges as usual
+        vertex_messages = @pregel_vertex_processor.compute(vertex)  
+      end
+    end
+
+    queue_out_lalp <+ (vertices * worker_input).pairs do |vertex, worker_input_command|
+      if(worker_input_command.message.command=="start" and vertex.type == :master)
+        # master vertices generate single message for each worker
+        @pregel_vertex_processor.compute(vertex)
+        source_vertex_id = vertex.id
+        message_value = vertex.value / vertex.total_adjacent_vertices
+        [source_vertex_id, message_value, 0, false, false]
       end
     end
 
@@ -121,10 +135,26 @@ class PregelWorker
         end
     end
 
+    # delivery of lalp messages to all workers for next Pregel superstep
+    control_pipe <~ (queue_out_lalp * workers_list).pairs do |vertex_message, worker|
+      # puts "Vertex ID" + vertex_message.vertex_from.to_s
+      # puts "Worker" + worker.id.to_s
+        if(vertex_message.sent == false)
+          # increase sent count, mark sent flag if all workers have message
+          vertex_message.sent = true if vertex_message.sent_count == workers_count.reveal
+          vertex_message.sent_count += 1
+          message = Message.new(ip_port, worker.worker_addr, nil, 
+            "request", "lalp_message", vertex_message.to_a)
+          # puts "Actaul Message: " + message.inspect
+          [worker.worker_addr, ip_port, message]
+        end
+    end
+
     # remove all outgoing vertex messages from "queue_out" in next timestep
     # They are sent to recipients in the current timestep.
     # queue_out <- (queue_out * queue_out.group([], bool_and(:sent))).lefts
     queue_out <- queue_out
+    queue_out_lalp <-queue_out_lalp
 
     # send back a confirmation to Master that the superstep is complete
     # This Worker->Master {superstep finished} message is sent after all vertex_messages were *sent*.
@@ -143,7 +173,22 @@ class PregelWorker
         [network_message.message.params[2], network_message.message.params[1], network_message.message.params[3]]
       end
     }
-    next_superstep_messages_count <= queue_out.group([], count()) {|columns| columns.first }
+    # replicate lalp messages for each adjacent 
+    queue_in_next <= (control_pipe * vertices).pairs.flat_map { |network_message, vertex|
+      if network_message.message.command == "lalp_message"  
+        lalp_message_vertex = network_message.message.params[0]
+        if(network_message.message.command == "lalp_message" and lalp_message_vertex == vertex.id)
+          messages = []
+          vertex.vertices_to.each {|neighbour|
+            messages << [neighbour, lalp_message_vertex, network_message.message.params[1]]
+          }
+          messages
+        end
+      end
+    }
+
+    # TODO: How to add queue_out_lalp message count???
+    next_superstep_messages_count <= queue_out.group([], count()) {|columns| columns.first } 
   end
 
   bloom :debug_worker do
