@@ -52,7 +52,8 @@ class PregelWorker
     # table :queue_out_per_worker_temp, [:worker_id] => [:vertex_messages_queue]
     # table :queue_out_per_worker, [:worker_id] => [:vertex_messages_queue, :sent]
     # table :supersteps, [:id] => [:completed]
-    lmax :next_superstep_messages_count
+    lmax :next_superstep_regular_messages_count
+    lmax :next_superstep_lalp_messages_count
   end
 
   bloom :load_graph do
@@ -69,6 +70,9 @@ class PregelWorker
 
     control_pipe <~ (vertices.group([], count()) * worker_events).pairs {|vertices_count, event|
       if(vertices_count[0] > 0 and event.name == "graph_loaded" and event.finished == false)
+        # print out number of vertices
+        puts "# of regular vertices : #{@graph_loader.regular_vertex_count}"
+        puts "# of master vertices  : #{@graph_loader.master_vertex_count}"
         event.finished = true
         response_message = Message.new(ip_port, @server, nil, "response", "load", {status: "success"})
         [response_message.to, ip_port, response_message]
@@ -76,11 +80,9 @@ class PregelWorker
     }
   end
 
-  # "queue_in_next" may contain not 1 queue of incoming messages, but 1 queue per each Worker
-  # Each worker sends 1 big network_message containing all vertex_messages,
-  # but there can be multiple workers.
-  # Either aggregate all imcoming vertex_message_queues into 1 queue,
-  # or do an outer loop over all queues in "queue_in_next" for each vertex
+  # Each entry in queue_in_next is a seperate vertex message (lalp messages are already replicated when we initially receive network pack with lalp message)
+  # if master send start, put that into worker_input in next timestep so that next superstep starts
+  # Purge queue_in_next in next bloom timestep
   bloom :superstep_initialization do
     # table :queue_in_next, [ [:vertex_id, :vertex_from] => [:message_value], ... ]
     vertices <+- (vertices * control_pipe).pairs do |vertex, payload|
@@ -107,6 +109,7 @@ class PregelWorker
   end
 
   bloom :pregel_processing do
+    # regular vertex messages, one for each adjacent vertex
     # table :queue_out, [:adjacent_vertex_worker_id, :vertex_from, :vertex_to] => [:message]
     queue_out <+ (vertices * worker_input).pairs.flat_map do |vertex, worker_input_command|
       if(worker_input_command.message.command=="start" and vertex.type == :regular)
@@ -115,6 +118,7 @@ class PregelWorker
       end
     end
 
+    # special lalp messages are produced by only master vertices, which copies vertex value to every worker
     queue_out_lalp <+ (vertices * worker_input).pairs do |vertex, worker_input_command|
       if(worker_input_command.message.command=="start" and vertex.type == :master)
         # master vertices generate single message for each worker
@@ -125,7 +129,7 @@ class PregelWorker
       end
     end
 
-    # delivery of the vertex messages to adjacent vertices for the next Pregel superstep
+    # delivery of the regular vertex messages to adjacent vertices for the next Pregel superstep
     # table :queue_out, [:adjacent_vertex_worker_id, :vertex_id, :vertex_from] => [:message, :sent, :delivered]
     message_pipe <~ (queue_out * workers_list)
       .pairs(:adjacent_vertex_worker_id => :id) do |vertex_message, worker|
@@ -166,6 +170,8 @@ class PregelWorker
     # and calculates PageRank correctly.
     control_pipe <~ queue_out.group([], bool_and(:sent)) {|vertex_messages_sent|
       response_message = Message.new(ip_port, @server, nil, "response", "start", {status: "success"})
+      puts next_superstep_regular_messages_count.reveal
+      puts next_superstep_lalp_messages_count.reveal
       [response_message.to, ip_port, response_message]
     }
 
@@ -173,11 +179,12 @@ class PregelWorker
     queue_in_next <= message_pipe { |network_message|
       [network_message.message.params[2], network_message.message.params[1], network_message.message.params[3]]
     }
-    # replicate lalp messages for each adjacent 
+    # replicate lalp messages for each adjacent (this rule is fired at receiver side, so that single message per vertex is transmitted on wire)
     queue_in_next <= (lalp_pipe * vertices).pairs.flat_map { |network_message, vertex|
       lalp_message_vertex = network_message.message.params[0]
       if(lalp_message_vertex == vertex.id)
         messages = []
+        # replication of lalp message to each neighbour at local partition
         vertex.vertices_to.each {|neighbour|
           messages << [neighbour, lalp_message_vertex, network_message.message.params[1]]
         }
@@ -186,7 +193,8 @@ class PregelWorker
     }
 
     # TODO: How to add queue_out_lalp message count???
-    next_superstep_messages_count <= queue_out.group([], count()) {|columns| columns.first }
+    next_superstep_regular_messages_count <= queue_out.group([], count()) {|columns| columns.first }
+    next_superstep_lalp_messages_count <= queue_out_lalp.group([], count()) {|columns| columns.first }
   end
 
   bloom :debug_worker do
@@ -195,7 +203,7 @@ class PregelWorker
     stdio <~ vertices  { |vertex| [vertex.inspect] }
     # stdio <~ queue_out { |vertex_queue| [vertex_queue.inspect] }
     # stdio <~ queue_out_per_worker { |vertex_messages_per_worker| [vertex_messages_per_worker.inspect] }
-    # stdio <~ [["next_superstep_messages_count: "+next_superstep_messages_count.reveal.to_s]]
+    # stdio <~ [["next_superstep_regular_messages_count: "+next_superstep_regular_messages_count.reveal.to_s]]
     # stdio <~ worker_events { |event| [event.inspect] }
   end
 end

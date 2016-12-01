@@ -97,13 +97,17 @@ end
 # [node2] [# of neighbours] [neighbour1, neighbour2, ...]
 class AdjacencyListGraphLoader
   attr_accessor :vertices, :file_name, :worker_id, :total_workers, :lalp_threshold
-  attr_reader :graph_size
+  attr_reader :graph_size, :master_vertex_count, :regular_vertex_count
   def initialize(file_name="graph.txt", worker_id=0, total_workers=1, lalp_threshold = 4)
     @vertices = Array.new
     @file_name=file_name
     @worker_id=worker_id
     @total_workers=total_workers
     @lalp_threshold=lalp_threshold
+    # total number of master vertices, number of ghost vertices will be @master_vertex_count * (@total_workers - 1)
+    @master_vertex_count=0
+    # total number of regular vertices that are assigne to this partition
+    @regular_vertex_count=0
   end
 
   def load_graph
@@ -145,6 +149,7 @@ class AdjacencyListGraphLoader
   # [vertex_id, vertex_value, total_adjacent_vertices, [vertices_it_points_to]]
   # where vertex_value is set to 1/total_vertex_number (init for PageRank)
   def add_vertex input_line
+    @regular_vertex_count += 1
     vertex = [input_line[0], :regular, 1.to_f/@graph_size, input_line[1], input_line[2..input_line.length]]
     @vertices << vertex
   end
@@ -153,6 +158,8 @@ class AdjacencyListGraphLoader
   # [vertex_id, vertex_value, total_adjacent_vertices, [vertices_it_points_to]]
   # where vertex_value is set to 1/total_vertex_number (init for PageRank) and vertices_it_points_to include vertices only in this specific partition
   def add_lalp_vertex input_line
+    # increase count
+    @master_vertex_count += 1
     # first extract the outgoing edges that are assigned to this partition
     local_neighbours = Array.new
     input_line[2..input_line.length].each{ |adjacent_vertex|
