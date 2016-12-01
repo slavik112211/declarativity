@@ -18,11 +18,17 @@ require './pregel/membership.rb'
 class PregelMaster
   include Bud
   include MembershipMaster
-  MAX_SUPERSTEPS = 250
+  MAX_SUPERSTEPS = 10
+
 
   def initialize(opts={})
     @request_count = -1
     super opts
+  end
+
+  def time_to_ms(start, finish)
+    # first convert milliseconds, then truncate
+    ((finish - start) * 1000).to_i
   end
 
   state do
@@ -32,11 +38,11 @@ class PregelMaster
     lbool :graph_loaded
     lbool :computation_completed
 
-    table :supersteps, [:id] => [:request_sent, :completed]
+    table :supersteps, [:id] => [:request_sent, :completed, :start_time, :end_time, :elapsed_time_ms]
     lmax :supersteps_count
     lmax :supersteps_completed_count
     interface input, :start_superstep, [:iteration]
-    periodic :timestep, 0.001 #Process a Bloom timestep every millisecond
+    periodic :timestep, 1 #Process a Bloom timestep every millisecond
   end
 
   bloom :messaging do
@@ -98,7 +104,9 @@ class PregelMaster
     supersteps <+- (supersteps.argmax([], :id) *
       workers_list.group([], bool_and(:superstep_completed)) ).combos {|latest_superstep, columns|
       if columns.first == true
-        [latest_superstep.id, latest_superstep.request_sent, true] #completed=true
+        finish_time = Time.now
+        elapsed_time_ms = time_to_ms(latest_superstep.start_time, finish_time)
+        [latest_superstep.id, latest_superstep.request_sent, true, latest_superstep.start_time, finish_time, elapsed_time_ms] #completed=true
       end
     }
 
@@ -111,7 +119,7 @@ class PregelMaster
 
     #iterating
     supersteps <= start_superstep {|start_superstep_command|
-      [start_superstep_command.iteration, false, false]
+      [start_superstep_command.iteration, false, false, Time.now, nil, nil]
     }
 
     # for the latest superstep tuple in "supersteps", send a request to Workers
@@ -135,13 +143,13 @@ class PregelMaster
   end
 
   bloom :debug_master do
-    stdio <~ [["loaded: "+graph_loaded.reveal.to_s]]
+    # stdio <~ [["loaded: "+graph_loaded.reveal.to_s]]
     # stdio <~ multicast { |command| [command.to_s] }
     # stdio <~ [["supersteps_count: "+supersteps_count.reveal.to_s]]
-    stdio <~ [["supersteps_completed_count: "+supersteps_completed_count.reveal.to_s]]
+    # stdio <~ [["supersteps_completed_count: "+supersteps_completed_count.reveal.to_s]]
     # stdio <~ [["Computation completed: "+computation_completed.reveal.to_s]]
     # stdio <~ start_superstep { |command| [command.to_s] }
-    # stdio <~ supersteps { |superstep| [superstep.to_s] }
+    stdio <~ supersteps { |superstep| [superstep.to_s] }
     # stdio <~ control_pipe  { |command| [command.message.inspect] }
   end
 end
