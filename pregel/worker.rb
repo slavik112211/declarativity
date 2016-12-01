@@ -29,6 +29,8 @@ class PregelWorker
 
   state do
     channel :control_pipe, [:@address, :from, :message]
+    channel :message_pipe, [:@address, :from, :message]
+    channel :lalp_pipe, [:@address, :from, :message]
     interface output, :worker_output, [:message]
     interface input, :worker_input, [:message]
     table :worker_events, [:name] => [:finished]
@@ -125,7 +127,7 @@ class PregelWorker
 
     # delivery of the vertex messages to adjacent vertices for the next Pregel superstep
     # table :queue_out, [:adjacent_vertex_worker_id, :vertex_id, :vertex_from] => [:message, :sent, :delivered]
-    control_pipe <~ (queue_out * workers_list)
+    message_pipe <~ (queue_out * workers_list)
       .pairs(:adjacent_vertex_worker_id => :id) do |vertex_message, worker|
         if(vertex_message.sent == false)
           vertex_message.sent = true
@@ -136,7 +138,7 @@ class PregelWorker
     end
 
     # delivery of lalp messages to all workers for next Pregel superstep
-    control_pipe <~ (queue_out_lalp * workers_list).pairs do |vertex_message, worker|
+    lalp_pipe <~ (queue_out_lalp * workers_list).pairs do |vertex_message, worker|
       # puts "Vertex ID" + vertex_message.vertex_from.to_s
       # puts "Worker" + worker.id.to_s
         if(vertex_message.sent == false)
@@ -168,27 +170,23 @@ class PregelWorker
     }
 
     # Save vertex_messages_queue for the next Pregel superstep
-    queue_in_next <= control_pipe { |network_message|
-      if(network_message.message.command == "vertex_message")
-        [network_message.message.params[2], network_message.message.params[1], network_message.message.params[3]]
-      end
+    queue_in_next <= message_pipe { |network_message|
+      [network_message.message.params[2], network_message.message.params[1], network_message.message.params[3]]
     }
     # replicate lalp messages for each adjacent 
-    queue_in_next <= (control_pipe * vertices).pairs.flat_map { |network_message, vertex|
-      if network_message.message.command == "lalp_message"  
-        lalp_message_vertex = network_message.message.params[0]
-        if(network_message.message.command == "lalp_message" and lalp_message_vertex == vertex.id)
-          messages = []
-          vertex.vertices_to.each {|neighbour|
-            messages << [neighbour, lalp_message_vertex, network_message.message.params[1]]
-          }
-          messages
-        end
+    queue_in_next <= (lalp_pipe * vertices).pairs.flat_map { |network_message, vertex|
+      lalp_message_vertex = network_message.message.params[0]
+      if(lalp_message_vertex == vertex.id)
+        messages = []
+        vertex.vertices_to.each {|neighbour|
+          messages << [neighbour, lalp_message_vertex, network_message.message.params[1]]
+        }
+        messages
       end
     }
 
     # TODO: How to add queue_out_lalp message count???
-    next_superstep_messages_count <= queue_out.group([], count()) {|columns| columns.first } 
+    next_superstep_messages_count <= queue_out.group([], count()) {|columns| columns.first }
   end
 
   bloom :debug_worker do

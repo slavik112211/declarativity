@@ -18,7 +18,7 @@ require './pregel/membership.rb'
 class PregelMaster
   include Bud
   include MembershipMaster
-  MAX_SUPERSTEPS = 50
+  MAX_SUPERSTEPS = 10
 
   def initialize(opts={})
     @request_count = -1

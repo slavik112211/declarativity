@@ -98,7 +98,7 @@ end
 class AdjacencyListGraphLoader
   attr_accessor :vertices, :file_name, :worker_id, :total_workers, :lalp_threshold
   attr_reader :graph_size
-  def initialize(file_name="graph.txt", worker_id=0, total_workers=1, lalp_threshold = 5)
+  def initialize(file_name="graph.txt", worker_id=0, total_workers=1, lalp_threshold = 4)
     @vertices = Array.new
     @file_name=file_name
     @worker_id=worker_id
