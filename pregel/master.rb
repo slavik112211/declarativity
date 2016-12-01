@@ -20,6 +20,7 @@ class PregelMaster
   include MembershipMaster
   MAX_SUPERSTEPS = 10
 
+
   def initialize(opts={})
     @request_count = -1
     super opts

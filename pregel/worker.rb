@@ -35,6 +35,7 @@ class PregelWorker
     interface input, :worker_input, [:message]
     table :worker_events, [:name] => [:finished]
 
+    # TODO: 'vertices' table should ALSO include vertices that don't point to any vertices (dead-end vertices)
     # messages_inbox = [[:vertex_from, :value], [:vertex_from, :value]]
     # message type is a symbol with three values: [:regular, :master, :ghost]
     table :vertices, [:id] => [:type, :value, :total_adjacent_vertices, :vertices_to, :messages_inbox]
@@ -64,6 +65,10 @@ class PregelWorker
         @graph_loader.total_workers = workers_count.reveal
         @graph_loader.load_graph
         @pregel_vertex_processor.graph_loader = @graph_loader
+
+        # STUB DATA populating the messages_inbox for first and second vertices for superstep 0
+        # @graph_loader.vertices[0] << [[1, 0.1], [3, 0.7]] if @graph_loader.vertices[0][0] == 2
+        # @graph_loader.vertices[0] << [[2, 0.5], [3, 0.3]] if @graph_loader.vertices[0][0] == 1
         @graph_loader.vertices
       end
     end
@@ -84,7 +89,7 @@ class PregelWorker
   # if master send start, put that into worker_input in next timestep so that next superstep starts
   # Purge queue_in_next in next bloom timestep
   bloom :superstep_initialization do
-    # table :queue_in_next, [ [:vertex_id, :vertex_from] => [:message_value], ... ]
+    # table :queue_in_next, [:vertex_id, :vertex_from] => [:message_value]
     vertices <+- (vertices * control_pipe).pairs do |vertex, payload|
       if payload.message.command=="start"
         messages = []
@@ -103,8 +108,8 @@ class PregelWorker
 
     # Purge the "queue_in_next" in the next Bloom timestep,
     # as we have populated "vertices" message_inbox in the current Bloom timestep
-    queue_in_next <- (queue_in_next * control_pipe).pairs do |vertex_messages_queue, payload|
-      vertex_messages_queue if payload.message.command=="start"
+    queue_in_next <- (queue_in_next * control_pipe).pairs do |vertex_message, payload|
+      vertex_message if payload.message.command=="start"
     end
   end
 
