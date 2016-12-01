@@ -14,8 +14,8 @@ class PageRankVertexProcessor
 
     vertex.vertices_to.each { |adjacent_vertex|
       adjacent_vertex_worker_id = @graph_loader.graph_partition_for_vertex(adjacent_vertex)
-      messages << [adjacent_vertex_worker_id, vertex.id, adjacent_vertex,
-        vertex.value.to_f / vertex.total_adjacent_vertices]
+      messages << [adjacent_vertex_worker_id, vertex.id, adjacent_vertex, 
+        vertex.value.to_f / vertex.total_adjacent_vertices, false, false]
     }
     messages
   end

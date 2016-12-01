@@ -33,19 +33,14 @@ class PregelWorker
     interface input, :worker_input, [:message]
     table :worker_events, [:name] => [:finished]
 
+    # TODO: 'vertices' table should ALSO include vertices that don't point to any vertices (dead-end vertices)
     # messages_inbox = [[:vertex_from, :value], [:vertex_from, :value]]
     table :vertices, [:id] => [:value, :total_adjacent_vertices, :vertices_to, :messages_inbox]
 
     periodic :timestep, 0.001  #Process a Bloom timestep every milliseconds
 
-    # Each Pregel superstep "queue_in_next" holds upto N amount of network_messages, where N=1 per each Worker
-    # Each network message may contain 1 or more vertex_messages (from that Worker)
-    table :queue_in_next, [:messages_queue]
-    table :queue_out, [:adjacent_vertex_worker_id, :vertex_from, :vertex_to] => [:message]
-    # all vertex messages are packed into 1 network message per Worker:
-    # [:worker_id] => [[:vertex_from, :vertex_to, :message], ...]
-    table :queue_out_per_worker_temp, [:worker_id] => [:vertex_messages_queue]
-    table :queue_out_per_worker, [:worker_id] => [:vertex_messages_queue, :sent]
+    table :queue_in_next, [:vertex_id, :vertex_from] => [:message_value]
+    table :queue_out, [:adjacent_vertex_worker_id, :vertex_from, :vertex_to] => [:message, :sent, :delivered]
     # table :supersteps, [:id] => [:completed]
     lmax :next_superstep_messages_count
   end
@@ -58,6 +53,10 @@ class PregelWorker
         @graph_loader.total_workers = workers_count.reveal
         @graph_loader.load_graph
         @pregel_vertex_processor.graph_loader = @graph_loader
+
+        # STUB DATA populating the messages_inbox for first and second vertices for superstep 0
+        # @graph_loader.vertices[0] << [[1, 0.1], [3, 0.7]] if @graph_loader.vertices[0][0] == 2
+        # @graph_loader.vertices[0] << [[2, 0.5], [3, 0.3]] if @graph_loader.vertices[0][0] == 1
         @graph_loader.vertices
       end
     end
@@ -71,23 +70,15 @@ class PregelWorker
     }
   end
 
-  # "queue_in_next" may contain not 1 queue of incoming messages, but 1 queue per each Worker
-  # Each worker sends 1 big network_message containing all vertex_messages,
-  # but there can be multiple workers.
-  # Either aggregate all imcoming vertex_message_queues into 1 queue,
-  # or do an outer loop over all queues in "queue_in_next" for each vertex
   bloom :superstep_initialization do
-    # table :queue_in_next, [ [:vertex_id, :vertex_from] => [:message_value], ... ]
+    # table :queue_in_next, [:vertex_id, :vertex_from] => [:message_value]
     vertices <+- (vertices * control_pipe).pairs do |vertex, payload|
       if payload.message.command=="start"
         messages = []
-        queue_in_next.each {|vertex_messages|
-          vertex_messages.messages_queue.each {|message|
-            if vertex.id == message[1]  # message[1] == :vertex_to
-              #message[0] == :vertex_from; # message[2] == :value
-              messages << [message[0], message[2]]
-            end
-          }
+        queue_in_next.each {|message|
+          if vertex.id == message.vertex_id
+            messages << [message[1], message[2]]
+          end
         }
         [vertex.id, vertex.value, vertex.total_adjacent_vertices, vertex.vertices_to, messages]
       end
@@ -99,8 +90,8 @@ class PregelWorker
 
     # Purge the "queue_in_next" in the next Bloom timestep,
     # as we have populated "vertices" message_inbox in the current Bloom timestep
-    queue_in_next <- (queue_in_next * control_pipe).pairs do |vertex_messages_queue, payload|
-      vertex_messages_queue if payload.message.command=="start"
+    queue_in_next <- (queue_in_next * control_pipe).pairs do |vertex_message, payload|
+      vertex_message if payload.message.command=="start"
     end
   end
 
@@ -112,70 +103,48 @@ class PregelWorker
       end
     end
 
-    # group all vertex_messages into a 1 network message per Worker
-    # Didn't work: queue_out.group([:adjacent_vertex_worker_id], accum([:vertex_from, :vertex_to, :message]))
-    # accum() aggregator only works for one column: accum(:vertex_to)
-    # VertexMessages to worker_id=1: [1, [[2, 1, 0.16666666666666666], [2, 3, 0.16666666666666666]]]
-    # 2 vertex messages: 1st - from vertex 2 to vertex 1, 2nd - from vertex 2 to vertex 3
-    queue_out_per_worker_temp <= queue_out.reduce({}) do |accumulator, vertex_message|
-      accumulator[vertex_message.adjacent_vertex_worker_id] ||= []
-      accumulator[vertex_message.adjacent_vertex_worker_id] <<
-        [vertex_message.vertex_from, vertex_message.vertex_to, vertex_message.message]
-      accumulator
-    end
-
-    # set all outgoing vertex_messages_queues to :sent=false
-    queue_out_per_worker <= queue_out_per_worker_temp do |vertex_messages|
-      [vertex_messages[0], vertex_messages[1], false]
-    end
-
     # delivery of the vertex messages to adjacent vertices for the next Pregel superstep
-    # table :queue_out_per_worker, [:worker_id] => [[:vertex_from, :vertex_to, :message], ...]
-    control_pipe <~ (queue_out_per_worker * workers_list)
-      .pairs(:worker_id => :id) do |vertex_messages, worker|
-        if(vertex_messages.sent == false)
-          vertex_messages.sent = true
-          message = Message.new(ip_port, worker.worker_addr, nil,
-            "request", "vertex_messages", vertex_messages.vertex_messages_queue)
+    # table :queue_out, [:adjacent_vertex_worker_id, :vertex_id, :vertex_from] => [:message, :sent, :delivered]
+    control_pipe <~ (queue_out * workers_list)
+      .pairs(:adjacent_vertex_worker_id => :id) do |vertex_message, worker|
+        if(vertex_message.sent == false)
+          vertex_message.sent = true
+          message = Message.new(ip_port, worker.worker_addr, nil, 
+            "request", "vertex_message", vertex_message.to_a)
           [worker.worker_addr, ip_port, message]
         end
     end
 
     # remove all outgoing vertex messages from "queue_out" in next timestep
     # They are sent to recipients in the current timestep.
-    # queue_out <- (queue_out * queue_out.group([], bool_and(:sent))).lefts
-    queue_out <- queue_out
-    queue_out_per_worker_temp <- queue_out_per_worker_temp
-    queue_out_per_worker <- queue_out_per_worker
+    queue_out <- (queue_out * queue_out.group([], bool_and(:sent))).lefts
 
     # send back a confirmation to Master that the superstep is complete
     # This Worker->Master {superstep finished} message is sent after all vertex_messages were *sent*.
     # Thus, this doesn't ensure that all vertex_messages are *delivered* before the Master
-    # instructs Workers to start the next superstep.
-    # Nonetheless, somehow Bud framework sends this {superstep finished} message 
-    # only after all vertex_messages are *delivered*, and calculates PageRank correctly.
-    # TODO: use reliable delivery protocol with acknowledgement of receipt, before setting :sent to true
-    control_pipe <~ queue_out_per_worker.group([], bool_and(:sent)) {|vertex_messages_sent|
+    # commands to start the next superstep.
+    # Nonetheless, Bud framework sends this message only after all vertex_messages are received,
+    # and calculates PageRank correctly.
+    control_pipe <~ queue_out.group([], bool_and(:sent)) {|vertex_messages_sent|
       response_message = Message.new(ip_port, @server, nil, "response", "start", {status: "success"})
       [response_message.to, ip_port, response_message]
     }
 
-    # Save vertex_messages_queue for the next Pregel superstep
-    queue_in_next <= control_pipe { |network_message|
-      if(network_message.message.command == "vertex_messages")
-        [network_message.message.params]
+    # accumulate vertex messages for the next Pregel superstep
+    queue_in_next <= control_pipe { |vertex_message|
+      if(vertex_message.message.command == "vertex_message")
+        [vertex_message.message.params[2], vertex_message.message.params[1], vertex_message.message.params[3]]
       end
     }
-    next_superstep_messages_count <= queue_out.group([], count()) {|columns| columns.first }
+    next_superstep_messages_count <= queue_in_next.group([], count()) {|columns| columns.first }
   end
 
   bloom :debug_worker do
-    stdio <~ control_pipe { |network_message| [network_message.to_s] if network_message.message.command == "start" }
+    # stdio <~ control_pipe { |network_message| [network_message.to_s] if network_message.message.command == "start" }
     # stdio <~ queue_in_next  { |vertex_message| [vertex_message.inspect] }
     stdio <~ vertices  { |vertex| [vertex.inspect] }
     # stdio <~ queue_out { |vertex_queue| [vertex_queue.inspect] }
-    # stdio <~ queue_out_per_worker { |vertex_messages_per_worker| [vertex_messages_per_worker.inspect] }
-    # stdio <~ [["next_superstep_messages_count: "+next_superstep_messages_count.reveal.to_s]]
+    stdio <~ [["next_superstep_messages_count: "+next_superstep_messages_count.reveal.to_s]]
     # stdio <~ worker_events { |event| [event.inspect] }
   end
 end
