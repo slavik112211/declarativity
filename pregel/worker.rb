@@ -45,7 +45,7 @@ class PregelWorker
     # message type is a symbol with three values: [:regular, :master, :ghost]
     table :vertices, [:id] => [:type, :value, :total_adjacent_vertices, :vertices_to, :messages_inbox]
 
-    periodic :timestep, 0.0001  #Process a Bloom timestep every milliseconds
+    periodic :timestep, 0.01  #Process a Bloom timestep every milliseconds
 
     # we store each vertex message in a seperate entry, so there might be multiple messages per vertex from same worker
     table :queue_in_next, [:vertex_id, :vertex_from] => [:message_value]
@@ -180,27 +180,31 @@ class PregelWorker
     # remove all outgoing vertex messages from "queue_out" in next timestep
     # They are sent to recipients in the current timestep.
     # queue_out <- (queue_out * queue_out.group([], bool_and(:sent))).lefts
-    queue_out <- queue_out
+    # queue_out <- queue_out
     queue_out_lalp <-queue_out_lalp
 
     # send back a confirmation to Master that the superstep is complete
-    # This Worker->Master {superstep finished} message is sent after all vertex_messages were *sent*.
-    # Thus, this doesn't ensure that all vertex_messages are *delivered* before the Master
-    # commands to start the next superstep.
-    # Nonetheless, Bud framework sends this message only after all vertex_messages are received,
-    # and calculates PageRank correctly.
+    # This Worker->Master {superstep finished} message is sent after all vertex_messages were *delivered*.
+    # This is ensured by employing ReliableDelivery protocol for these network messages,
+    # meaning that .delivered flag is only set when the acknowledgement network message is received for each network_message sent.
     control_pipe <~ queue_out.group([], bool_and(:delivered)) {|vertex_messages_sent|
-      response_message = Message.new(ip_port, @server, nil, "response", "start", {status: "success"})
-      # puts "##!!!!!! COMPLETED SENDING MESSAGES, sending COMPLETED_SUPERSTEP back to masta"
-      puts next_superstep_regular_messages_count.reveal
-      puts next_superstep_lalp_messages_count.reveal
-      [response_message.to, ip_port, response_message]
+      if vertex_messages_sent[0]==true #when all .delivered == true
+        response_message = Message.new(ip_port, @server, nil, "response", "start", {status: "success"})
+        # puts "##!!!!!! COMPLETED SENDING MESSAGES, sending COMPLETED_SUPERSTEP back to masta"
+        puts next_superstep_regular_messages_count.reveal
+        puts next_superstep_lalp_messages_count.reveal
+        [response_message.to, ip_port, response_message]
+      end
     }
 
     # now control the delivery messages on pipe_sent then delete mark on control pipe accordingly
-    queue_out <+- (queue_out * pipe_sent).pairs(:uuid => :ident) {|original_message, delivered_message|
-      original_message.delivered = true
-      original_message
+    queue_out <+- (queue_out * pipe_sent).pairs {|original_message, delivered_message|
+      puts "ACKED original #{original_message.inspect}"
+      puts "ACKED ack_message #{delivered_message.inspect}"
+      if original_message.uuid == delivered_message.ident
+        original_message.delivered = true
+        [original_message]
+      end
     }
 
     # Save vertex_messages_queue for the next Pregel superstep
@@ -229,11 +233,21 @@ class PregelWorker
   bloom :debug_worker do
     stdio <~ control_pipe { |network_message| [network_message.to_s] if network_message.message.command == "start" }
     # stdio <~ queue_in_next  { |vertex_message| [vertex_message.inspect] }
-    # stdio <~ vertices  { |vertex| [vertex.inspect] }
+    stdio <~ vertices  { |vertex| [vertex.inspect] }
+    stdio <~ pipe_sent { |ack| [ack.inspect] }
     # stdio <~ queue_out { |vertex_queue| [vertex_queue.inspect] }
     # stdio <~ queue_out_per_worker { |vertex_messages_per_worker| [vertex_messages_per_worker.inspect] }
     # stdio <~ [["next_superstep_regular_messages_count: "+next_superstep_regular_messages_count.reveal.to_s]]
     # stdio <~ worker_events { |event| [event.inspect] }
+
+    stdio <~ queue_out.group([:delivered], count()) do |grouped_count|
+      # This grouping can contain 2 groups - number of delivered messages: [true, 3], and
+      # number of not delivered messages: [false, 1]
+      # This block is executed twice - once for each case.
+      ["VERTEX_MESSAGES_DELIVERED #{grouped_count.inspect}"]
+    end
+
+
   end
 end
 
