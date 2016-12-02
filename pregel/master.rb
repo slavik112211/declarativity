@@ -18,7 +18,7 @@ require './pregel/membership.rb'
 class PregelMaster
   include Bud
   include MembershipMaster
-  MAX_SUPERSTEPS = 10
+  MAX_SUPERSTEPS = 250
 
 
   def initialize(opts={})
@@ -42,7 +42,7 @@ class PregelMaster
     lmax :supersteps_count
     lmax :supersteps_completed_count
     interface input, :start_superstep, [:iteration]
-    periodic :timestep, 1 #Process a Bloom timestep every millisecond
+    periodic :timestep, 0.0001 #Process a Bloom timestep every millisecond
   end
 
   bloom :messaging do

@@ -1,11 +1,15 @@
 require 'rubygems'
 require 'bud'
+require 'securerandom'
 require './pregel/membership.rb'
 require './pregel/master.rb'
 require './pregel/graph/graph_loader.rb'
+require './lib/delivery/reliable.rb'
 require 'debugger'
 # require './lib/delivery/reliable'
 
+
+# SecureRandom.uuid() to generate unique message ids for reliable delivery
 # Workers:
 # 1. maintains vertex' values
 # 2. maintains 2 queues of messages per each vertex - one for this superstep, second for the other.
@@ -15,6 +19,7 @@ require 'debugger'
 class PregelWorker
   include Bud
   include MembershipWorker
+  include ReliableDelivery
 
   def initialize(server, vertex_processor, opts={})
     @server = server
@@ -40,12 +45,12 @@ class PregelWorker
     # message type is a symbol with three values: [:regular, :master, :ghost]
     table :vertices, [:id] => [:type, :value, :total_adjacent_vertices, :vertices_to, :messages_inbox]
 
-    periodic :timestep, 1  #Process a Bloom timestep every milliseconds
+    periodic :timestep, 0.0001  #Process a Bloom timestep every milliseconds
 
     # we store each vertex message in a seperate entry, so there might be multiple messages per vertex from same worker
     table :queue_in_next, [:vertex_id, :vertex_from] => [:message_value]
     table :queue_in_next_lalp, [:vertex_id] => [:message_value]
-    table :queue_out, [:adjacent_vertex_worker_id, :vertex_from, :vertex_to] => [:message, :sent, :delivered]
+    table :queue_out, [:adjacent_vertex_worker_id, :vertex_from, :vertex_to, :uuid] => [:message, :sent, :delivered]
     # special lalp messages which will be sent to each worker and replicated to vertex inboxes
     table :queue_out_lalp, [:vertex_from] => [:message, :sent_count, :sent, :delivered]
     # all vertex messages are packed into 1 network message per Worker:
@@ -76,8 +81,8 @@ class PregelWorker
     control_pipe <~ (vertices.group([], count()) * worker_events).pairs {|vertices_count, event|
       if(vertices_count[0] > 0 and event.name == "graph_loaded" and event.finished == false)
         # print out number of vertices
-        puts "# of regular vertices : #{@graph_loader.regular_vertex_count}"
-        puts "# of master vertices  : #{@graph_loader.master_vertex_count}"
+        # puts "# of regular vertices : #{@graph_loader.regular_vertex_count}"
+        # puts "# of master vertices  : #{@graph_loader.master_vertex_count}"
         event.finished = true
         response_message = Message.new(ip_port, @server, nil, "response", "load", {status: "success"})
         [response_message.to, ip_port, response_message]
@@ -109,6 +114,7 @@ class PregelWorker
     # Purge the "queue_in_next" in the next Bloom timestep,
     # as we have populated "vertices" message_inbox in the current Bloom timestep
     queue_in_next <- (queue_in_next * control_pipe).pairs do |vertex_message, payload|
+      # puts "!!!!!removing message #{vertex_message.inspect}"
       vertex_message if payload.message.command=="start"
     end
   end
@@ -119,7 +125,15 @@ class PregelWorker
     queue_out <+ (vertices * worker_input).pairs.flat_map do |vertex, worker_input_command|
       if(worker_input_command.message.command=="start" and vertex.type == :regular)
         # regular vertices send message for each adjacent edges as usual
-        vertex_messages = @pregel_vertex_processor.compute(vertex)  
+        vertex_messages = @pregel_vertex_processor.compute(vertex)
+        # iterate over values produced by vertex processor, add uuid to each one
+        vertex_messages_uuid = []  
+        vertex_messages.each {|vertex_message|
+          vertex_messages_uuid << [vertex_message[0], vertex_message[1], vertex_message[2],
+          SecureRandom.uuid, vertex_message[3], vertex_message[4], vertex_message[5]]
+        }
+        # add messages with uuid
+        vertex_messages_uuid
       end
     end
 
@@ -136,13 +150,15 @@ class PregelWorker
 
     # delivery of the regular vertex messages to adjacent vertices for the next Pregel superstep
     # table :queue_out, [:adjacent_vertex_worker_id, :vertex_id, :vertex_from] => [:message, :sent, :delivered]
-    message_pipe <~ (queue_out * workers_list)
+    pipe_in <= (queue_out * workers_list)
       .pairs(:adjacent_vertex_worker_id => :id) do |vertex_message, worker|
+        # puts "!!!! PRE queue_out => message_pipe #{vertex_message.inspect}"
         if(vertex_message.sent == false)
           vertex_message.sent = true
+          # puts "!!!! POST queue_out => message_pipe #{vertex_message.inspect}"
           message = Message.new(ip_port, worker.worker_addr, nil, 
             "request", "vertex_message", vertex_message.to_a)
-          [worker.worker_addr, ip_port, message]
+          [worker.worker_addr, ip_port, vertex_message.uuid, message]
         end
     end
 
@@ -173,16 +189,24 @@ class PregelWorker
     # commands to start the next superstep.
     # Nonetheless, Bud framework sends this message only after all vertex_messages are received,
     # and calculates PageRank correctly.
-    control_pipe <~ queue_out.group([], bool_and(:sent)) {|vertex_messages_sent|
+    control_pipe <~ queue_out.group([], bool_and(:delivered)) {|vertex_messages_sent|
       response_message = Message.new(ip_port, @server, nil, "response", "start", {status: "success"})
+      # puts "##!!!!!! COMPLETED SENDING MESSAGES, sending COMPLETED_SUPERSTEP back to masta"
       puts next_superstep_regular_messages_count.reveal
       puts next_superstep_lalp_messages_count.reveal
       [response_message.to, ip_port, response_message]
     }
 
+    # now control the delivery messages on pipe_sent then delete mark on control pipe accordingly
+    queue_out <+- (queue_out * pipe_sent).pairs(:uuid => :ident) {|original_message, delivered_message|
+      original_message.delivered = true
+      original_message
+    }
+
     # Save vertex_messages_queue for the next Pregel superstep
-    queue_in_next <= message_pipe { |network_message|
-      [network_message.message.params[2], network_message.message.params[1], network_message.message.params[3]]
+    queue_in_next <= pipe_out { |network_message|
+      # puts "!!!!!! message_pipe =>queue_in_next id=#{network_message.payload.params[2]}, #{network_message.payload.params[1]}"
+      [network_message.payload.params[2], network_message.payload.params[1], network_message.payload.params[4]]
     }
     # replicate lalp messages for each adjacent (this rule is fired at receiver side, so that single message per vertex is transmitted on wire)
     queue_in_next <= (lalp_pipe * vertices).pairs.flat_map { |network_message, vertex|
@@ -205,7 +229,7 @@ class PregelWorker
   bloom :debug_worker do
     stdio <~ control_pipe { |network_message| [network_message.to_s] if network_message.message.command == "start" }
     # stdio <~ queue_in_next  { |vertex_message| [vertex_message.inspect] }
-    stdio <~ vertices  { |vertex| [vertex.inspect] }
+    # stdio <~ vertices  { |vertex| [vertex.inspect] }
     # stdio <~ queue_out { |vertex_queue| [vertex_queue.inspect] }
     # stdio <~ queue_out_per_worker { |vertex_messages_per_worker| [vertex_messages_per_worker.inspect] }
     # stdio <~ [["next_superstep_regular_messages_count: "+next_superstep_regular_messages_count.reveal.to_s]]
