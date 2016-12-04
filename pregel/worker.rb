@@ -25,6 +25,9 @@ class PregelWorker
     @server = server
     @graph_loader = AdjacencyListGraphLoader.new
     @pregel_vertex_processor = vertex_processor
+    @sent = 0
+    @received = 0
+    @acked = 0
     super opts
   end
 
@@ -45,7 +48,7 @@ class PregelWorker
     # message type is a symbol with three values: [:regular, :master, :ghost]
     table :vertices, [:id] => [:type, :value, :total_adjacent_vertices, :vertices_to, :messages_inbox]
 
-    periodic :timestep, 0.01  #Process a Bloom timestep every milliseconds
+    periodic :timestep, 0.00001  #Process a Bloom timestep every milliseconds
 
     # we store each vertex message in a seperate entry, so there might be multiple messages per vertex from same worker
     table :queue_in_next, [:vertex_id, :vertex_from] => [:message_value]
@@ -150,12 +153,14 @@ class PregelWorker
 
     # delivery of the regular vertex messages to adjacent vertices for the next Pregel superstep
     # table :queue_out, [:adjacent_vertex_worker_id, :vertex_id, :vertex_from] => [:message, :sent, :delivered]
-    pipe_in <= (queue_out * workers_list)
+    pipe_in <+ (queue_out * workers_list)
       .pairs(:adjacent_vertex_worker_id => :id) do |vertex_message, worker|
         # puts "!!!! PRE queue_out => message_pipe #{vertex_message.inspect}"
         if(vertex_message.sent == false)
           vertex_message.sent = true
-          # puts "!!!! POST queue_out => message_pipe #{vertex_message.inspect}"
+          # puts "!!!! POST queue_out => pipe_in #{vertex_message.inspect}"
+          @sent += 1
+          puts "Sent #{@sent}"
           message = Message.new(ip_port, worker.worker_addr, nil, 
             "request", "vertex_message", vertex_message.to_a)
           [worker.worker_addr, ip_port, vertex_message.uuid, message]
@@ -180,36 +185,54 @@ class PregelWorker
     # remove all outgoing vertex messages from "queue_out" in next timestep
     # They are sent to recipients in the current timestep.
     # queue_out <- (queue_out * queue_out.group([], bool_and(:sent))).lefts
-    # queue_out <- queue_out
-    queue_out_lalp <-queue_out_lalp
+    queue_out_lalp <- queue_out_lalp
+
+    queue_out <- (queue_out * worker_output).pairs do |vertex_message, worker_output_message|
+      # check whether messages is acked message
+      if vertex_message.delivered and worker_output_message.message.command == "acked"
+        # puts "Remove vertex #{vertex_message.inspect}"
+        vertex_message
+      end
+    end
 
     # send back a confirmation to Master that the superstep is complete
     # This Worker->Master {superstep finished} message is sent after all vertex_messages were *delivered*.
     # This is ensured by employing ReliableDelivery protocol for these network messages,
     # meaning that .delivered flag is only set when the acknowledgement network message is received for each network_message sent.
     control_pipe <~ queue_out.group([], bool_and(:delivered)) {|vertex_messages_sent|
-      if vertex_messages_sent[0]==true #when all .delivered == true
+      if vertex_messages_sent[0] == true #when all .delivered == true
+        puts "ALL MESSAGES DELIVERED #{vertex_messages_sent}"
         response_message = Message.new(ip_port, @server, nil, "response", "start", {status: "success"})
-        # puts "##!!!!!! COMPLETED SENDING MESSAGES, sending COMPLETED_SUPERSTEP back to masta"
-        puts next_superstep_regular_messages_count.reveal
-        puts next_superstep_lalp_messages_count.reveal
         [response_message.to, ip_port, response_message]
       end
     }
 
+    worker_output <= queue_out.group([], bool_and(:delivered)) {|vertex_messages_sent|
+      if vertex_messages_sent[0] == true #when all .delivered == true
+        # now write ack message on output so that queues can be cleared
+        # puts "worker_output <= ACKED"
+        acked_message = Message.new(ip_port, @server, nil, "response", "acked", {})
+        [acked_message]
+      end
+    }
+
     # now control the delivery messages on pipe_sent then delete mark on control pipe accordingly
-    queue_out <+- (queue_out * pipe_sent).pairs {|original_message, delivered_message|
-      puts "ACKED original #{original_message.inspect}"
-      puts "ACKED ack_message #{delivered_message.inspect}"
-      if original_message.uuid == delivered_message.ident
+    queue_out <+- (queue_out * pipe_sent).pairs(:uuid => :ident) {|original_message, delivered_message|
+      if original_message.delivered == false
+        # puts "ACKED original #{original_message.inspect}"
+        # puts "ACKED ack_message #{delivered_message.inspect}"
+        @acked += 1
+        puts "Acked #{@acked}"
         original_message.delivered = true
-        [original_message]
+        original_message
       end
     }
 
     # Save vertex_messages_queue for the next Pregel superstep
     queue_in_next <= pipe_out { |network_message|
-      # puts "!!!!!! message_pipe =>queue_in_next id=#{network_message.payload.params[2]}, #{network_message.payload.params[1]}"
+      # puts "!!!!!! pipe_out =>queue_in_next id=#{network_message.payload.params[2]}, #{network_message.payload.params[1]}"
+      @received += 1
+      puts "Received #{@received}"
       [network_message.payload.params[2], network_message.payload.params[1], network_message.payload.params[4]]
     }
     # replicate lalp messages for each adjacent (this rule is fired at receiver side, so that single message per vertex is transmitted on wire)
@@ -226,26 +249,26 @@ class PregelWorker
     }
 
     # TODO: How to add queue_out_lalp message count???
-    next_superstep_regular_messages_count <= queue_out.group([], count()) {|columns| columns.first }
-    next_superstep_lalp_messages_count <= queue_out_lalp.group([], count()) {|columns| columns.first }
+    # next_superstep_regular_messages_count <= queue_out.group([], count()) {|columns| columns.first }
+    # next_superstep_lalp_messages_count <= queue_out_lalp.group([], count()) {|columns| columns.first }
   end
 
   bloom :debug_worker do
     stdio <~ control_pipe { |network_message| [network_message.to_s] if network_message.message.command == "start" }
     # stdio <~ queue_in_next  { |vertex_message| [vertex_message.inspect] }
-    stdio <~ vertices  { |vertex| [vertex.inspect] }
-    stdio <~ pipe_sent { |ack| [ack.inspect] }
-    # stdio <~ queue_out { |vertex_queue| [vertex_queue.inspect] }
+    # stdio <~ vertices  { |vertex| [vertex.inspect] }
+    # stdio <~ pipe_sent { |ack| [ack.inspect] }
+    # stdio <~ queue_out { |vertex_queue| [ "QUEUE_OUT" + vertex_queue.inspect] }
     # stdio <~ queue_out_per_worker { |vertex_messages_per_worker| [vertex_messages_per_worker.inspect] }
     # stdio <~ [["next_superstep_regular_messages_count: "+next_superstep_regular_messages_count.reveal.to_s]]
     # stdio <~ worker_events { |event| [event.inspect] }
 
-    stdio <~ queue_out.group([:delivered], count()) do |grouped_count|
-      # This grouping can contain 2 groups - number of delivered messages: [true, 3], and
-      # number of not delivered messages: [false, 1]
-      # This block is executed twice - once for each case.
-      ["VERTEX_MESSAGES_DELIVERED #{grouped_count.inspect}"]
-    end
+    # stdio <~ queue_out.group([:delivered], count()) do |grouped_count|
+    #   # This grouping can contain 2 groups - number of delivered messages: [true, 3], and
+    #   # number of not delivered messages: [false, 1]
+    #   # This block is executed twice - once for each case.
+    #   ["VERTEX_MESSAGES_DELIVERED #{grouped_count.inspect}"]
+    # end
 
 
   end
